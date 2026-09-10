@@ -1,30 +1,93 @@
 extends CanvasLayer
 class_name GameHUD
 
+signal host_requested
+signal join_requested(address: String)
 signal roll_requested
+signal property_action_requested(accepted: bool)
 
+@onready var startup_overlay: Control = $StartupOverlay
+@onready var lobby_status_label: Label = $StartupOverlay/Center/Panel/Content/LobbyStatus
+@onready var address_input: LineEdit = $StartupOverlay/Center/Panel/Content/AddressInput
+@onready var host_button: Button = $StartupOverlay/Center/Panel/Content/Buttons/HostButton
+@onready var join_button: Button = $StartupOverlay/Center/Panel/Content/Buttons/JoinButton
+@onready var hud: Control = $HUD
+@onready var current_player_label: Label = $HUD/InfoPanel/Labels/CurrentPlayerLabel
+@onready var coins_label: Label = $HUD/InfoPanel/Labels/CoinsLabel
+@onready var all_coins_label: Label = $HUD/InfoPanel/Labels/AllCoinsLabel
 @onready var cell_label: Label = $HUD/InfoPanel/Labels/CellLabel
 @onready var roll_label: Label = $HUD/InfoPanel/Labels/RollLabel
+@onready var turn_status_label: Label = $HUD/InfoPanel/Labels/TurnStatusLabel
 @onready var roll_button: Button = $HUD/RollButton
-
+@onready var property_overlay: Control = $PropertyOverlay
+@onready var property_title: Label = $PropertyOverlay/Center/Panel/Content/Title
+@onready var property_details: Label = $PropertyOverlay/Center/Panel/Content/Details
+@onready var confirm_button: Button = $PropertyOverlay/Center/Panel/Content/Actions/ConfirmButton
+@onready var skip_button: Button = $PropertyOverlay/Center/Panel/Content/Actions/SkipButton
 
 func _ready() -> void:
-	roll_button.pressed.connect(_on_roll_button_pressed)
+	host_button.pressed.connect(func() -> void: host_requested.emit())
+	join_button.pressed.connect(func() -> void: join_requested.emit(address_input.text.strip_edges()))
+	roll_button.pressed.connect(func() -> void: roll_requested.emit())
+	confirm_button.pressed.connect(func() -> void: property_action_requested.emit(true))
+	skip_button.pressed.connect(func() -> void: property_action_requested.emit(false))
+	show_startup()
 
+func show_startup() -> void:
+	startup_overlay.visible = true
+	hud.visible = false
+	property_overlay.visible = false
+	set_lobby_status("请选择 Host 或 Join")
 
-func _on_roll_button_pressed() -> void:
-	roll_requested.emit()
+func show_game() -> void:
+	startup_overlay.visible = false
+	hud.visible = true
 
+func set_lobby_status(message: String) -> void:
+	lobby_status_label.text = message
 
-func set_current_cell(cell_index: int) -> void:
+func set_lobby_buttons_enabled(enabled: bool) -> void:
+	host_button.disabled = not enabled
+	join_button.disabled = not enabled
+
+func update_game_state(local_player_id: int, current_player_id: int, players: Dictionary, cell_index: int, roll_value: int, phase: String) -> void:
+	current_player_label.text = "当前玩家：Player %d" % current_player_id
+	var own_state: Dictionary = players.get(local_player_id, {})
+	coins_label.text = "自己的金币：%d" % int(own_state.get("coins", 0))
+	var p1: Dictionary = players.get(1, {})
+	var p2: Dictionary = players.get(2, {})
+	all_coins_label.text = "P1 %d  |  P2 %d" % [int(p1.get("coins", 0)), int(p2.get("coins", 0))]
 	cell_label.text = "当前格子：%d" % cell_index
+	roll_label.text = "骰子点数：%s" % (str(roll_value) if roll_value > 0 else "—")
+	var is_my_turn := local_player_id == current_player_id
+	var can_roll := is_my_turn and phase == "waiting"
+	roll_button.disabled = not can_roll
+	roll_button.text = "掷骰子" if can_roll else ("移动中…" if phase == "moving" else "等待")
+	turn_status_label.text = ("轮到你操作" if phase == "waiting" else "正在处理当前回合") if is_my_turn else "等待 Player %d" % current_player_id
 
+func show_property_prompt(action: Dictionary) -> void:
+	var action_type := String(action.get("type", ""))
+	var price := int(action.get("price", 0))
+	var cell := int(action.get("cell_index", 0))
+	var level := int(action.get("property_level", 0))
+	match action_type:
+		"buy":
+			property_title.text = "是否购买该房产？"
+			property_details.text = "格子 %d\n购买价格：%d 金币" % [cell, price]
+			confirm_button.text = "购买"
+			skip_button.text = "跳过"
+		"upgrade":
+			property_title.text = "是否升级房产？"
+			property_details.text = "格子 %d：L%d → L%d\n升级价格：%d 金币" % [cell, level, level + 1, price]
+			confirm_button.text = "升级"
+			skip_button.text = "跳过"
+		"capture":
+			property_title.text = "是否抢占该房产？"
+			property_details.text = "房主：Player %d\n房产等级：L%d\n抢占价格：%d 金币" % [int(action.get("owner_id", -1)), level, price]
+			confirm_button.text = "抢占"
+			skip_button.text = "放弃"
+	confirm_button.disabled = not bool(action.get("can_afford", true))
+	property_overlay.visible = true
 
-func set_roll_value(value: int) -> void:
-	roll_label.text = "骰子点数：%d" % value
-
-
-func set_roll_enabled(enabled: bool) -> void:
-	roll_button.disabled = not enabled
-	roll_button.text = "掷骰子" if enabled else "移动中…"
-
+func hide_property_prompt() -> void:
+	property_overlay.visible = false

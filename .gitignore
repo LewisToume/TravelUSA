@@ -11,4 +11,7 @@ builds/
 .DS_Store
 Thumbs.db
 *.tmp
+*.import
 
+# Integration-test runtime output
+test-results/

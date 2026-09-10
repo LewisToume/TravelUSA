@@ -9,8 +9,21 @@
 script = ExtResource("1_manager")
 
 [node name="Board" parent="." instance=ExtResource("2_board")]
+visible = false
 
-[node name="Player" parent="." instance=ExtResource("3_player")]
+[node name="Player1" parent="." instance=ExtResource("3_player")]
+visible = false
+player_id = 1
+player_color = Color(0.16, 0.64, 1, 1)
+
+[node name="Player2" parent="." instance=ExtResource("3_player")]
+visible = false
+player_id = 2
+player_color = Color(1, 0.3, 0.62, 1)
+
+[node name="TurnCamera" type="Camera2D" parent="."]
+position_smoothing_enabled = true
+position_smoothing_speed = 10.0
+enabled = true
 
 [node name="GameUI" parent="." instance=ExtResource("4_ui")]
-

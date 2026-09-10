@@ -7,10 +7,3 @@ z_index = 10
 script = ExtResource("1_player")
 move_speed_pixels_per_second = 720.0
 minimum_step_duration = 0.24
-camera_smoothing_speed = 10.0
-
-[node name="Camera2D" type="Camera2D" parent="."]
-position_smoothing_enabled = true
-position_smoothing_speed = 10.0
-enabled = true
-

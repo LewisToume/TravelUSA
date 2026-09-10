@@ -1,12 +1,9 @@
 extends SceneTree
 
 var _failures: Array[String] = []
-var _steps_seen: Array[int] = []
-
 
 func _initialize() -> void:
 	call_deferred("_run")
-
 
 func _check(condition: bool, description: String) -> void:
 	if condition:
@@ -15,67 +12,80 @@ func _check(condition: bool, description: String) -> void:
 		_failures.append(description)
 		push_error("FAIL | " + description)
 
-
 func _run() -> void:
 	var packed := load("res://scenes/main.tscn") as PackedScene
-	_check(packed != null, "主场景可以加载")
+	_check(packed != null, "主场景可加载")
 	if packed == null:
 		quit(1)
 		return
-
-	var game := packed.instantiate()
+	var game = packed.instantiate()
 	root.add_child(game)
 	await process_frame
 	await process_frame
+	game.test_mode = true
+	game.player_1.move_speed_pixels_per_second = 100000.0
+	game.player_2.move_speed_pixels_per_second = 100000.0
+	game.player_1.minimum_step_duration = 0.001
+	game.player_2.minimum_step_duration = 0.001
+	game.start_local_test_game()
 
-	var board = game.get_node("Board")
-	var player = game.get_node("Player")
-	var ui = game.get_node("GameUI")
-	var camera: Camera2D = player.get_node("Camera2D")
+	_check(game.players_state.size() == 2, "同时创建两个玩家")
+	_check(int(game.players_state[1]["coins"]) == 10000 and int(game.players_state[2]["coins"]) == 10000, "双方初始金币为 10000")
+	_check(int(game.players_state[1]["diamonds"]) == 100 and int(game.players_state[2]["diamonds"]) == 100, "双方初始钻石为 100")
+	_check(int(game.players_state[1]["player_level"]) == 10, "玩家初始等级为 10")
+	_check(game.properties.size() == 30 and int(game.properties[8]["owner_id"]) == -1, "30 个地产状态初始化为空地")
+	_check(game.player_1.visible and game.player_2.visible, "两个棋子同时显示")
+	_check(game.turn_camera.enabled, "当前回合 Camera2D 已启用")
+	_check(GameRules.capture_price(2, 0) == 2000 and GameRules.capture_price(2, 1) == 4000, "抢占价格按次数递增")
+	_check(game.can_upgrade_property(10, 4) and not game.can_upgrade_property(3, 4), "房产等级判断为独立规则")
 
-	_check(board.get_cell_count() == 30, "棋盘生成 30 个连续格子")
-	_check(board.get_route_bounds().size.x > 1920.0, "棋盘宽度大于设计视口")
-	_check(board.get_route_bounds().size.y > 1080.0, "棋盘高度大于设计视口")
-	_check(player.current_cell_index == 0, "玩家从第 0 格开始")
-	_check(player.position.is_equal_approx(board.get_cell_position(0)), "玩家初始位置对齐第 0 格")
-	_check(camera.enabled and camera.get_parent() == player, "Camera2D 启用并随玩家变换")
-	_check(camera.limit_left < -9000000 and camera.limit_right > 9000000, "镜头未设置边界夹取，路线边缘仍以玩家为中心")
-	_check(ui.layer > 0 and ui.get_node("HUD/RollButton") is Button, "UI 位于独立 CanvasLayer")
-
-	var rolls_in_range := true
-	for _i in range(100):
+	var rolls_valid := true
+	for _index in range(100):
 		var roll: int = game.generate_roll()
-		rolls_in_range = rolls_in_range and roll >= 1 and roll <= 6
-	_check(rolls_in_range, "随机骰子 100 次均在 1～6")
+		rolls_valid = rolls_valid and roll >= 1 and roll <= 6
+	_check(rolls_valid, "随机骰子范围为 1～6")
 
-	_steps_seen.clear()
-	player.step_reached.connect(_record_step)
-	game.start_turn(3)
-	_check(game.turn_in_progress and ui.roll_button.disabled, "移动开始后禁用掷骰子按钮")
-	var first_roll: int = game.last_roll
-	game.start_turn(6)
-	_check(game.last_roll == first_roll, "移动中再次掷骰被忽略")
-	await game.turn_finished
-	_check(player.current_cell_index == 3, "点数 3 准确到达第 3 格")
-	_check(_steps_seen == [1, 2, 3], "玩家按 1、2、3 逐格移动")
-	_check(not game.turn_in_progress and not ui.roll_button.disabled, "移动结束后恢复掷骰")
+	game._host_try_roll(2, 6)
+	_check(game.phase == "waiting" and int(game.players_state[2]["cell"]) == 0, "非当前玩家的掷骰请求被拒绝")
 
-	player.place_at_cell(28, board)
-	ui.set_current_cell(28)
-	_steps_seen.clear()
-	game.start_turn(4)
-	await game.turn_finished
-	_check(player.current_cell_index == 2, "末尾循环后准确落在第 2 格")
-	_check(_steps_seen == [29, 0, 1, 2], "循环路径按 29、0、1、2 连续逐格移动")
-	_check(player.position.is_equal_approx(board.get_cell_position(2)), "循环移动最终位置正确")
+	game._host_try_roll(1, 2)
+	_check(await _wait_for_prompt(game), "P1 移动后收到买地操作")
+	_check(String(game.pending_action["type"]) == "buy", "空地产生购买选项")
+	game._host_resolve_property(1, true)
+	_check(int(game.properties[2]["owner_id"]) == 1 and int(game.properties[2]["property_level"]) == 1, "P1 买下格子 2 并成为 L1")
+	_check(int(game.players_state[1]["coins"]) == 9000 and game.current_player_id == 2, "P1 扣除 1000 并切换 P2")
+
+	game._host_try_roll(2, 1)
+	_check(await _wait_for_prompt(game), "P2 移动后收到买地操作")
+	game._host_resolve_property(2, true)
+	_check(int(game.properties[1]["owner_id"]) == 2 and int(game.players_state[2]["coins"]) == 9000, "P2 买地状态正确")
+
+	game._host_try_roll(1, 30)
+	_check(await _wait_for_prompt(game, 5.0), "P1 闭环回到自有地产")
+	_check(String(game.pending_action["type"]) == "upgrade" and int(game.pending_action["price"]) == 2000, "L1 升 L2 价格为 2000")
+	game._host_resolve_property(1, true)
+	_check(int(game.properties[2]["property_level"]) == 2 and int(game.players_state[1]["coins"]) == 7000, "P1 升级成功并正确扣款")
+
+	game._host_try_roll(2, 1)
+	_check(await _wait_for_prompt(game), "P2 落在 P1 地产后收到抢占操作")
+	_check(String(game.pending_action["type"]) == "capture" and int(game.pending_action["price"]) == 2000, "L2 首次抢占价格为 2000")
+	game._host_resolve_property(2, true)
+	var captured: Dictionary = game.properties[2]
+	_check(int(captured["owner_id"]) == 2 and int(captured["property_level"]) == 3 and int(captured["capture_count"]) == 1, "抢占后归属、等级、次数正确")
+	_check(int(game.players_state[2]["coins"]) == 7000, "抢占者扣除 2000")
+	_check(int(game.players_state[1]["coins"]) == 8600, "原房主获得抢占价格的 80%")
+	_check(game.current_player_id == 1 and game.phase == "waiting", "抢占后正确切回 P1")
+	_check(not game.game_ui.roll_button.disabled, "当前本地玩家掷骰按钮启用")
 
 	if _failures.is_empty():
-		print("ACCEPTANCE RESULT | 12/12 核心检查通过，无脚本错误")
+		print("ACCEPTANCE RESULT | PASS | 单机权威规则与 UI 检查全部通过")
 		quit(0)
 	else:
-		print("ACCEPTANCE RESULT | 失败项：", _failures)
+		print("ACCEPTANCE RESULT | FAIL | ", _failures)
 		quit(1)
 
-
-func _record_step(cell_index: int) -> void:
-	_steps_seen.append(cell_index)
+func _wait_for_prompt(game, timeout_seconds: float = 3.0) -> bool:
+	var deadline := Time.get_ticks_msec() + int(timeout_seconds * 1000.0)
+	while game.pending_action.is_empty() and Time.get_ticks_msec() < deadline:
+		await create_timer(0.01).timeout
+	return not game.pending_action.is_empty()

@@ -12,14 +12,11 @@ func _run() -> void:
 
 	for _frame in range(4):
 		await process_frame
-	_save_view("res://artifacts/initial_view.png")
+	_save_view("res://artifacts/startup_view.png")
 
-	game.start_turn(4)
-	await create_timer(0.22).timeout
-	_save_view("res://artifacts/mid_move_view.png")
-	await game.turn_finished
+	game.start_local_test_game()
 	await process_frame
-	_save_view("res://artifacts/after_move_view.png")
+	_save_view("res://artifacts/game_view.png")
 	quit(0)
 
 
@@ -30,4 +27,3 @@ func _save_view(path: String) -> void:
 		print("CAPTURED | ", path, " | ", image.get_size())
 	else:
 		push_error("Could not save capture: %s (error %d)" % [path, error])
-

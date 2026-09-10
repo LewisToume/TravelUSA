@@ -6,24 +6,20 @@ signal movement_finished(cell_index: int)
 
 @export_range(100.0, 2000.0, 10.0) var move_speed_pixels_per_second: float = 720.0
 @export_range(0.05, 1.0, 0.01) var minimum_step_duration: float = 0.24
-@export_range(1.0, 20.0, 0.5) var camera_smoothing_speed: float = 10.0
-
-@onready var follow_camera: Camera2D = $Camera2D
+@export_range(1, 2, 1) var player_id: int = 1
+@export var player_color: Color = Color("ffb347")
 
 var current_cell_index: int = 0
 var is_moving: bool = false
 
 
 func _ready() -> void:
-	follow_camera.position_smoothing_enabled = true
-	follow_camera.position_smoothing_speed = camera_smoothing_speed
 	queue_redraw()
 
 
 func place_at_cell(cell_index: int, board: BoardPath) -> void:
 	current_cell_index = posmod(cell_index, board.get_cell_count())
-	position = board.get_cell_position(current_cell_index)
-	follow_camera.reset_smoothing()
+	position = board.get_cell_position(current_cell_index) + _player_offset()
 
 
 func move_steps(step_count: int, board: BoardPath) -> void:
@@ -33,7 +29,7 @@ func move_steps(step_count: int, board: BoardPath) -> void:
 	is_moving = true
 	for _step in range(step_count):
 		var next_cell := (current_cell_index + 1) % board.get_cell_count()
-		await _move_smoothly_to(board.get_cell_position(next_cell))
+		await _move_smoothly_to(board.get_cell_position(next_cell) + _player_offset())
 		current_cell_index = next_cell
 		step_reached.emit(current_cell_index)
 
@@ -52,10 +48,13 @@ func _move_smoothly_to(target_position: Vector2) -> void:
 
 
 func _draw() -> void:
-	draw_circle(Vector2(6.0, 10.0), 45.0, Color(0.0, 0.0, 0.0, 0.3))
-	draw_circle(Vector2.ZERO, 42.0, Color("ffb347"))
-	draw_arc(Vector2.ZERO, 42.0, 0.0, TAU, 48, Color("5b3214"), 6.0, true)
-	draw_circle(Vector2(-14.0, -7.0), 5.0, Color("2b241f"))
-	draw_circle(Vector2(14.0, -7.0), 5.0, Color("2b241f"))
-	draw_arc(Vector2(0.0, 5.0), 17.0, 0.25, PI - 0.25, 24, Color("2b241f"), 4.0, true)
+	draw_circle(Vector2(5.0, 8.0), 37.0, Color(0.0, 0.0, 0.0, 0.3))
+	draw_circle(Vector2.ZERO, 35.0, player_color)
+	draw_arc(Vector2.ZERO, 35.0, 0.0, TAU, 40, Color("17242b"), 5.0, true)
+	var label := "P%d" % player_id
+	var font := ThemeDB.fallback_font
+	var size := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 22)
+	draw_string(font, Vector2(-size.x * 0.5, size.y * 0.32), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 22, Color.WHITE)
 
+func _player_offset() -> Vector2:
+	return Vector2(-42.0, 0.0) if player_id == 1 else Vector2(42.0, 0.0)

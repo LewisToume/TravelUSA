@@ -1,42 +1,105 @@
-[gd_scene load_steps=5 format=3]
+[gd_scene load_steps=3 format=3]
 
 [ext_resource type="Script" path="res://scripts/game_ui.gd" id="1_ui"]
 
-[sub_resource type="StyleBoxFlat" id="StylePanel"]
-bg_color = Color(0.055, 0.086, 0.12, 0.94)
+[sub_resource type="StyleBoxFlat" id="PanelStyle"]
+bg_color = Color(0.055, 0.086, 0.12, 0.96)
 border_width_left = 3
 border_width_top = 3
 border_width_right = 3
 border_width_bottom = 3
-border_color = Color(0.2, 0.72, 0.88, 0.8)
+border_color = Color(0.2, 0.72, 0.88, 0.85)
 corner_radius_top_left = 18
 corner_radius_top_right = 18
 corner_radius_bottom_right = 18
 corner_radius_bottom_left = 18
-content_margin_left = 24.0
-content_margin_top = 18.0
-content_margin_right = 24.0
-content_margin_bottom = 18.0
-
-[sub_resource type="StyleBoxFlat" id="StyleButton"]
-bg_color = Color(0.12, 0.56, 0.86, 1)
-corner_radius_top_left = 22
-corner_radius_top_right = 22
-corner_radius_bottom_right = 22
-corner_radius_bottom_left = 22
-
-[sub_resource type="StyleBoxFlat" id="StyleButtonDisabled"]
-bg_color = Color(0.22, 0.29, 0.35, 1)
-corner_radius_top_left = 22
-corner_radius_top_right = 22
-corner_radius_bottom_right = 22
-corner_radius_bottom_left = 22
+content_margin_left = 28.0
+content_margin_top = 24.0
+content_margin_right = 28.0
+content_margin_bottom = 24.0
 
 [node name="GameUI" type="CanvasLayer"]
 layer = 20
 script = ExtResource("1_ui")
 
+[node name="StartupOverlay" type="Control" parent="."]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="Backdrop" type="ColorRect" parent="StartupOverlay"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.035, 0.055, 0.075, 1)
+
+[node name="Center" type="CenterContainer" parent="StartupOverlay"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="Panel" type="PanelContainer" parent="StartupOverlay/Center"]
+custom_minimum_size = Vector2(640, 430)
+layout_mode = 2
+theme_override_styles/panel = SubResource("PanelStyle")
+
+[node name="Content" type="VBoxContainer" parent="StartupOverlay/Center/Panel"]
+layout_mode = 2
+theme_override_constants/separation = 20
+
+[node name="Title" type="Label" parent="StartupOverlay/Center/Panel/Content"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 48
+text = "TravelUSA 联机大富翁"
+horizontal_alignment = 1
+
+[node name="Hint" type="Label" parent="StartupOverlay/Center/Panel/Content"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 25
+text = "同一台电脑：先启动 Host，再启动 Join"
+horizontal_alignment = 1
+
+[node name="AddressInput" type="LineEdit" parent="StartupOverlay/Center/Panel/Content"]
+custom_minimum_size = Vector2(0, 58)
+layout_mode = 2
+theme_override_font_sizes/font_size = 28
+text = "127.0.0.1"
+
+[node name="Buttons" type="HBoxContainer" parent="StartupOverlay/Center/Panel/Content"]
+layout_mode = 2
+theme_override_constants/separation = 18
+alignment = 1
+
+[node name="HostButton" type="Button" parent="StartupOverlay/Center/Panel/Content/Buttons"]
+custom_minimum_size = Vector2(250, 74)
+layout_mode = 2
+theme_override_font_sizes/font_size = 30
+text = "Host Game"
+
+[node name="JoinButton" type="Button" parent="StartupOverlay/Center/Panel/Content/Buttons"]
+custom_minimum_size = Vector2(250, 74)
+layout_mode = 2
+theme_override_font_sizes/font_size = 30
+text = "Join Game"
+
+[node name="LobbyStatus" type="Label" parent="StartupOverlay/Center/Panel/Content"]
+layout_mode = 2
+theme_override_colors/font_color = Color(1, 0.8, 0.3, 1)
+theme_override_font_sizes/font_size = 25
+text = "请选择 Host 或 Join"
+horizontal_alignment = 1
+
 [node name="HUD" type="Control" parent="."]
+visible = false
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
@@ -46,32 +109,49 @@ grow_vertical = 2
 mouse_filter = 2
 
 [node name="InfoPanel" type="PanelContainer" parent="HUD"]
-layout_mode = 0
 offset_left = 32.0
 offset_top = 32.0
-offset_right = 370.0
-offset_bottom = 182.0
-theme_override_styles/panel = SubResource("StylePanel")
+offset_right = 520.0
+offset_bottom = 350.0
+theme_override_styles/panel = SubResource("PanelStyle")
 
 [node name="Labels" type="VBoxContainer" parent="HUD/InfoPanel"]
 layout_mode = 2
-theme_override_constants/separation = 10
+theme_override_constants/separation = 7
+
+[node name="CurrentPlayerLabel" type="Label" parent="HUD/InfoPanel/Labels"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 30
+text = "当前玩家：Player 1"
+
+[node name="CoinsLabel" type="Label" parent="HUD/InfoPanel/Labels"]
+layout_mode = 2
+theme_override_colors/font_color = Color(1, 0.82, 0.3, 1)
+theme_override_font_sizes/font_size = 28
+text = "自己的金币：10000"
+
+[node name="AllCoinsLabel" type="Label" parent="HUD/InfoPanel/Labels"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 23
+text = "P1 10000  |  P2 10000"
 
 [node name="CellLabel" type="Label" parent="HUD/InfoPanel/Labels"]
 layout_mode = 2
-theme_override_colors/font_color = Color(0.92, 0.97, 1, 1)
-theme_override_font_sizes/font_size = 34
+theme_override_font_sizes/font_size = 28
 text = "当前格子：0"
 
 [node name="RollLabel" type="Label" parent="HUD/InfoPanel/Labels"]
 layout_mode = 2
-theme_override_colors/font_color = Color(1, 0.82, 0.3, 1)
-theme_override_font_sizes/font_size = 34
+theme_override_font_sizes/font_size = 28
 text = "骰子点数：—"
 
+[node name="TurnStatusLabel" type="Label" parent="HUD/InfoPanel/Labels"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.35, 0.86, 1, 1)
+theme_override_font_sizes/font_size = 25
+text = "等待连接"
+
 [node name="RollButton" type="Button" parent="HUD"]
-layout_mode = 0
-anchors_preset = 8
 anchor_left = 1.0
 anchor_top = 1.0
 anchor_right = 1.0
@@ -82,13 +162,69 @@ offset_right = -32.0
 offset_bottom = -32.0
 grow_horizontal = 0
 grow_vertical = 0
-mouse_default_cursor_shape = 2
-theme_override_colors/font_color = Color(1, 1, 1, 1)
-theme_override_colors/font_disabled_color = Color(0.72, 0.77, 0.8, 1)
 theme_override_font_sizes/font_size = 40
-theme_override_styles/normal = SubResource("StyleButton")
-theme_override_styles/hover = SubResource("StyleButton")
-theme_override_styles/pressed = SubResource("StyleButton")
-theme_override_styles/disabled = SubResource("StyleButtonDisabled")
 text = "掷骰子"
 
+[node name="PropertyOverlay" type="Control" parent="."]
+visible = false
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="Shade" type="ColorRect" parent="PropertyOverlay"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0, 0, 0, 0.48)
+
+[node name="Center" type="CenterContainer" parent="PropertyOverlay"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="Panel" type="PanelContainer" parent="PropertyOverlay/Center"]
+custom_minimum_size = Vector2(680, 360)
+layout_mode = 2
+theme_override_styles/panel = SubResource("PanelStyle")
+
+[node name="Content" type="VBoxContainer" parent="PropertyOverlay/Center/Panel"]
+layout_mode = 2
+theme_override_constants/separation = 20
+
+[node name="Title" type="Label" parent="PropertyOverlay/Center/Panel/Content"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 38
+text = "地产操作"
+horizontal_alignment = 1
+
+[node name="Details" type="Label" parent="PropertyOverlay/Center/Panel/Content"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 28
+text = "详情"
+horizontal_alignment = 1
+
+[node name="Actions" type="HBoxContainer" parent="PropertyOverlay/Center/Panel/Content"]
+layout_mode = 2
+theme_override_constants/separation = 20
+alignment = 1
+
+[node name="ConfirmButton" type="Button" parent="PropertyOverlay/Center/Panel/Content/Actions"]
+custom_minimum_size = Vector2(230, 70)
+layout_mode = 2
+theme_override_font_sizes/font_size = 30
+text = "购买"
+
+[node name="SkipButton" type="Button" parent="PropertyOverlay/Center/Panel/Content/Actions"]
+custom_minimum_size = Vector2(230, 70)
+layout_mode = 2
+theme_override_font_sizes/font_size = 30
+text = "跳过"
