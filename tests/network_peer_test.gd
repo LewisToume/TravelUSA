@@ -25,14 +25,11 @@ func _run() -> void:
 		await _run_client()
 
 func _run_host() -> void:
-	if not _game.host_game(_port):
-		_finish(false, "host_create_failed")
-		return
-	if not await _wait_until(func() -> bool: return _game.game_is_started):
-		_finish(false, "client_not_connected")
+	if not _game.host_game(_port) or not await _wait_until(func() -> bool: return _game.game_is_started):
+		_finish(false, "host_or_connection_failed")
 		return
 	_game.request_test_roll(2)
-	if not await _wait_prompt():
+	if not await _wait_prompt_type("buy"):
 		_finish(false, "p1_buy_prompt_missing")
 		return
 	_game.submit_property_action(true)
@@ -40,12 +37,21 @@ func _run_host() -> void:
 		_finish(false, "p2_buy_not_synced")
 		return
 	_game.request_test_roll(30)
-	if not await _wait_prompt(6.0):
+	if not await _wait_prompt_type("upgrade", 7.0):
 		_finish(false, "p1_upgrade_prompt_missing")
 		return
 	_game.submit_property_action(true)
+	if not await _wait_until(_capture_state_ready, 8.0):
+		_finish(false, "p2_toll_capture_not_synced")
+		return
+	_game.request_test_roll(3)
+	if not await _wait_prompt_type("reward"):
+		_finish(false, "reward_not_triggered")
+		return
+	_game.submit_property_action(true)
+	_game.test_wheel_result_override = 200
 	if not await _wait_until(_final_state_ready, 8.0):
-		_finish(false, "p2_capture_not_synced")
+		_finish(false, "wheel_not_synced")
 		return
 	_finish(_validate_final_state(), "host_final_state")
 
@@ -60,7 +66,7 @@ func _run_client() -> void:
 		_finish(false, "p1_buy_not_synced")
 		return
 	_game.request_test_roll(1)
-	if not await _wait_prompt():
+	if not await _wait_prompt_type("buy"):
 		_finish(false, "p2_buy_prompt_missing")
 		return
 	_game.submit_property_action(true)
@@ -68,8 +74,19 @@ func _run_client() -> void:
 		_finish(false, "p1_upgrade_not_synced")
 		return
 	_game.request_test_roll(1)
-	if not await _wait_prompt():
+	if not await _wait_prompt_type("capture"):
 		_finish(false, "p2_capture_prompt_missing")
+		return
+	if int(_game.players_state[2]["coins"]) != 9925:
+		_finish(false, "final_cell_toll_missing")
+		return
+	_game.submit_property_action(true)
+	if not await _wait_until(func() -> bool: return _game.current_player_id == 2 and int(_game.players_state[1]["cell"]) == 5, 8.0):
+		_finish(false, "reward_not_synced")
+		return
+	_game.request_test_roll(7)
+	if not await _wait_prompt_type("wheel") or _game.last_wheel_result != 200:
+		_finish(false, "wheel_result_mismatch")
 		return
 	_game.submit_property_action(true)
 	if not await _wait_until(_final_state_ready):
@@ -77,21 +94,25 @@ func _run_client() -> void:
 		return
 	_finish(_validate_final_state(), "client_final_state")
 
-func _final_state_ready() -> bool:
+func _capture_state_ready() -> bool:
 	return _game.current_player_id == 1 and int(_game.properties[2]["owner_id"]) == 2 and int(_game.properties[2]["capture_count"]) == 1
+
+func _final_state_ready() -> bool:
+	return _game.current_player_id == 1 and int(_game.players_state[1]["cell"]) == 5 and int(_game.players_state[2]["cell"]) == 9 and _game.last_wheel_result == 200
 
 func _validate_final_state() -> bool:
 	var property: Dictionary = _game.properties[2]
-	return int(_game.players_state[1]["cell"]) == 2 \
-		and int(_game.players_state[2]["cell"]) == 2 \
-		and int(_game.players_state[1]["coins"]) == 8600 \
-		and int(_game.players_state[2]["coins"]) == 7000 \
+	return int(_game.players_state[1]["coins"]) == 10055 \
+		and int(_game.players_state[2]["coins"]) == 10025 \
 		and int(property["owner_id"]) == 2 \
 		and int(property["property_level"]) == 3 \
-		and int(property["capture_count"]) == 1
+		and int(property["capture_count"]) == 1 \
+		and String(_game.properties[5]["cell_type"]) == GameRules.CELL_REWARD \
+		and String(_game.properties[9]["cell_type"]) == GameRules.CELL_WHEEL \
+		and String(_game.last_event["type"]) == "wheel"
 
-func _wait_prompt(timeout_seconds: float = 4.0) -> bool:
-	return await _wait_until(func() -> bool: return _game.has_local_property_prompt(), timeout_seconds)
+func _wait_prompt_type(type: String, timeout_seconds: float = 5.0) -> bool:
+	return await _wait_until(func() -> bool: return _game.has_local_property_prompt() and String(_game.pending_action.get("type", "")) == type, timeout_seconds)
 
 func _wait_until(predicate: Callable, timeout_seconds: float = 5.0) -> bool:
 	var deadline := Time.get_ticks_msec() + int(timeout_seconds * 1000.0)

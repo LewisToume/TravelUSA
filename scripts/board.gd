@@ -18,6 +18,8 @@ const ROAD_EDGE_COLOR := Color("6e98a8")
 const EMPTY_PROPERTY_COLOR := Color("aab6bb")
 const PLAYER_1_PROPERTY_COLOR := Color("55aee8")
 const PLAYER_2_PROPERTY_COLOR := Color("e879a9")
+const REWARD_COLOR := Color("f2c94c")
+const WHEEL_COLOR := Color("9b72e8")
 const START_COLOR := Color("65d394")
 const CELL_BORDER_COLOR := Color("18323e")
 
@@ -91,11 +93,16 @@ func _draw() -> void:
 		var center := _cell_positions[index]
 		var rect := Rect2(center - Vector2.ONE * cell_size * 0.5, Vector2.ONE * cell_size)
 		var property: Dictionary = property_states[index] if index < property_states.size() else {}
+		var cell_type := String(property.get("cell_type", GameRules.CELL_PROPERTY))
 		var owner_id := int(property.get("owner_id", -1))
 		var property_level := int(property.get("property_level", 0))
 		var fill_color := EMPTY_PROPERTY_COLOR
-		if index == 0:
+		if cell_type == GameRules.CELL_START:
 			fill_color = START_COLOR
+		elif cell_type == GameRules.CELL_REWARD:
+			fill_color = REWARD_COLOR
+		elif cell_type == GameRules.CELL_WHEEL:
+			fill_color = WHEEL_COLOR
 		elif owner_id == 1:
 			fill_color = PLAYER_1_PROPERTY_COLOR
 		elif owner_id == 2:
@@ -103,11 +110,19 @@ func _draw() -> void:
 		draw_rect(rect, fill_color, true)
 		draw_rect(rect, CELL_BORDER_COLOR, false, 6.0)
 		draw_string(font, rect.position + Vector2(10.0, 28.0), str(index), HORIZONTAL_ALIGNMENT_LEFT, -1, 21, CELL_BORDER_COLOR)
-		if property_level > 0:
-			var level_text := "L%d" % property_level
-			var text_size := font.get_string_size(level_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size)
+		var center_text := ""
+		if cell_type == GameRules.CELL_REWARD:
+			center_text = "奖励"
+		elif cell_type == GameRules.CELL_WHEEL:
+			center_text = "转盘"
+		elif cell_type == GameRules.CELL_START:
+			center_text = "起点"
+		elif property_level > 0:
+			center_text = "L%d" % property_level
+		if not center_text.is_empty():
+			var text_size := font.get_string_size(center_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size)
 			var baseline := center + Vector2(-text_size.x * 0.5, text_size.y * 0.32)
-			draw_string(font, baseline, level_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, CELL_BORDER_COLOR)
+			draw_string(font, baseline, center_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, CELL_BORDER_COLOR)
 
 
 func _draw_background_grid(rect: Rect2) -> void:

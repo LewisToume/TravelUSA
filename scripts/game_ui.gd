@@ -66,6 +66,7 @@ func update_game_state(local_player_id: int, current_player_id: int, players: Di
 	turn_status_label.text = ("轮到你操作" if phase == "waiting" else "正在处理当前回合") if is_my_turn else "等待 Player %d" % current_player_id
 
 func show_property_prompt(action: Dictionary) -> void:
+	skip_button.visible = true
 	var action_type := String(action.get("type", ""))
 	var price := int(action.get("price", 0))
 	var cell := int(action.get("cell_index", 0))
@@ -87,6 +88,20 @@ func show_property_prompt(action: Dictionary) -> void:
 			confirm_button.text = "抢占"
 			skip_button.text = "放弃"
 	confirm_button.disabled = not bool(action.get("can_afford", true))
+	property_overlay.visible = true
+
+func show_event_prompt(action: Dictionary, can_confirm: bool) -> void:
+	var action_type := String(action.get("type", ""))
+	var amount := int(action.get("amount", 0))
+	if action_type == "reward":
+		property_title.text = "奖励格"
+		property_details.text = "获得 %d 金币" % amount
+	else:
+		property_title.text = "大转盘"
+		property_details.text = "获得 %d 金币" % amount if amount >= 0 else "损失 %d 金币" % absi(amount)
+	confirm_button.text = "确定" if can_confirm else "等待 Player %d 确认" % int(action.get("player_id", 0))
+	confirm_button.disabled = not can_confirm
+	skip_button.visible = false
 	property_overlay.visible = true
 
 func hide_property_prompt() -> void:

@@ -24,15 +24,19 @@ var phase: String = "lobby"
 var players_state: Dictionary = {}
 var properties: Array = []
 var pending_action: Dictionary = {}
+var last_turn_tolls: Array = []
+var last_event: Dictionary = {}
+var last_wheel_result: int = 0
 var player_peer_ids: Dictionary = {1: 1}
 var test_mode: bool = false
+var test_wheel_result_override: int = 0
 var _local_prompt_active: bool = false
 var _random := RandomNumberGenerator.new()
 
 func _ready() -> void:
 	_random.randomize()
 	players_state = {1: GameRules.build_player_state(), 2: GameRules.build_player_state()}
-	properties = GameRules.build_properties(board.get_cell_count())
+	properties = GameRules.build_cells(board.get_cell_count())
 	board.set_property_states(properties)
 	player_1.place_at_cell(0, board)
 	player_2.place_at_cell(0, board)
@@ -178,7 +182,17 @@ func _animate_player(player: BoardPlayer, roll_value: int) -> void:
 
 @rpc("authority", "call_remote", "reliable")
 func _show_property_prompt_remote(action: Dictionary) -> void:
+	pending_action = action.duplicate(true)
 	_show_property_prompt_when_ready(action)
+
+@rpc("authority", "call_local", "reliable")
+func _show_event_prompt_remote(action: Dictionary) -> void:
+	pending_action = action.duplicate(true)
+	var can_confirm := local_player_id == current_player_id
+	_local_prompt_active = can_confirm
+	game_ui.show_event_prompt(action, can_confirm)
+	if can_confirm:
+		property_prompted.emit(action)
 
 @rpc("any_peer", "call_remote", "reliable")
 func _request_roll_rpc() -> void:
@@ -206,22 +220,42 @@ func _host_try_roll(requesting_player_id: int, forced_roll: int = -1) -> void:
 func _host_execute_turn(player_id: int, roll_value: int) -> void:
 	phase = "moving"
 	last_roll = roll_value
+	last_turn_tolls = []
+	last_event = {}
+	last_wheel_result = 0
 	var start_cell := int(players_state[player_id]["cell"])
 	if multiplayer.has_multiplayer_peer():
 		_animate_turn.rpc(player_id, roll_value, start_cell)
 	else:
 		_animate_turn(player_id, roll_value, start_cell)
 	var player := _player_node(player_id)
-	if player.is_moving:
-		await player.movement_finished
-	var new_cell := (start_cell + roll_value) % board.get_cell_count()
-	var state: Dictionary = players_state[player_id]
-	state["cell"] = new_cell
-	players_state[player_id] = state
-	pending_action = _build_property_action(player_id)
-	if pending_action.is_empty():
-		_end_turn()
-		return
+	for _step in range(roll_value):
+		var reached_cell: int = await player.step_reached
+		var state: Dictionary = players_state[player_id]
+		state["cell"] = reached_cell
+		players_state[player_id] = state
+		if _settle_toll(player_id, reached_cell):
+			_broadcast_state()
+	_handle_final_cell(player_id)
+
+func _handle_final_cell(player_id: int) -> void:
+	var cell := int(players_state[player_id]["cell"])
+	var cell_type := String(properties[cell]["cell_type"])
+	match cell_type:
+		GameRules.CELL_PROPERTY:
+			pending_action = _build_property_action(player_id)
+			if pending_action.is_empty():
+				_end_turn()
+				return
+			_begin_property_decision(player_id)
+		GameRules.CELL_REWARD:
+			_start_reward_event(player_id)
+		GameRules.CELL_WHEEL:
+			_start_wheel_event(player_id)
+		_:
+			_end_turn()
+
+func _begin_property_decision(player_id: int) -> void:
 	phase = "decision"
 	_broadcast_state()
 	var target_peer := int(player_peer_ids.get(player_id, 1))
@@ -230,9 +264,60 @@ func _host_execute_turn(player_id: int, roll_value: int) -> void:
 	else:
 		_show_property_prompt_remote.rpc_id(target_peer, pending_action)
 
+func _start_reward_event(player_id: int) -> void:
+	var state: Dictionary = players_state[player_id]
+	state["coins"] = int(state["coins"]) + GameRules.REWARD_COINS
+	players_state[player_id] = state
+	pending_action = {"type": "reward", "amount": GameRules.REWARD_COINS, "cell_index": int(state["cell"]), "player_id": player_id}
+	last_event = pending_action.duplicate(true)
+	phase = "event"
+	_broadcast_state()
+	_broadcast_event_prompt()
+
+func _start_wheel_event(player_id: int) -> void:
+	last_wheel_result = _choose_wheel_result()
+	var state: Dictionary = players_state[player_id]
+	state["coins"] = int(state["coins"]) + last_wheel_result
+	players_state[player_id] = state
+	pending_action = {"type": "wheel", "amount": last_wheel_result, "cell_index": int(state["cell"]), "player_id": player_id}
+	last_event = pending_action.duplicate(true)
+	phase = "event"
+	_broadcast_state()
+	_broadcast_event_prompt()
+
+func _choose_wheel_result() -> int:
+	if test_mode and GameRules.is_wheel_result_valid(test_wheel_result_override):
+		return test_wheel_result_override
+	return int(GameRules.WHEEL_RESULTS[_random.randi_range(0, GameRules.WHEEL_RESULTS.size() - 1)])
+
+func _broadcast_event_prompt() -> void:
+	if multiplayer.has_multiplayer_peer():
+		_show_event_prompt_remote.rpc(pending_action)
+	else:
+		_show_event_prompt_remote(pending_action)
+
+func _settle_toll(player_id: int, cell_index: int) -> bool:
+	var cell: Dictionary = properties[cell_index]
+	if String(cell["cell_type"]) != GameRules.CELL_PROPERTY:
+		return false
+	var owner_id := int(cell["owner_id"])
+	if owner_id == -1 or owner_id == player_id:
+		return false
+	var amount := GameRules.toll_fee(int(cell["property_level"]))
+	if amount <= 0:
+		return false
+	var payer: Dictionary = players_state[player_id]
+	var owner: Dictionary = players_state[owner_id]
+	payer["coins"] = int(payer["coins"]) - amount
+	owner["coins"] = int(owner["coins"]) + amount
+	players_state[player_id] = payer
+	players_state[owner_id] = owner
+	last_turn_tolls.append({"cell_index": cell_index, "payer_id": player_id, "owner_id": owner_id, "amount": amount})
+	return true
+
 func _build_property_action(player_id: int) -> Dictionary:
 	var cell := int(players_state[player_id]["cell"])
-	if cell == 0:
+	if String(properties[cell]["cell_type"]) != GameRules.CELL_PROPERTY:
 		return {}
 	var property: Dictionary = properties[cell]
 	var owner_id := int(property["owner_id"])
@@ -240,10 +325,10 @@ func _build_property_action(player_id: int) -> Dictionary:
 	var player: Dictionary = players_state[player_id]
 	var action: Dictionary = {"cell_index": cell, "owner_id": owner_id, "property_level": level}
 	if owner_id == -1:
-		action.merge({"type": "buy", "price": GameRules.PURCHASE_PRICE})
+		action.merge({"type": "buy", "price": GameRules.purchase_price()})
 	elif owner_id == player_id and GameRules.can_upgrade_property(int(player["player_level"]), level):
 		action.merge({"type": "upgrade", "price": GameRules.upgrade_price(level)})
-	elif owner_id != player_id and level >= 1 and level <= 3:
+	elif owner_id != player_id and level >= 1 and level <= GameRules.MAX_CAPTURABLE_PROPERTY_LEVEL:
 		action.merge({"type": "capture", "price": GameRules.capture_price(level, int(property["capture_count"]))})
 	else:
 		return {}
@@ -252,16 +337,16 @@ func _build_property_action(player_id: int) -> Dictionary:
 
 func _show_property_prompt_when_ready(action: Dictionary) -> void:
 	var local_player := _player_node(local_player_id)
-	if local_player.is_moving:
-		await local_player.movement_finished
+	while local_player.is_moving:
+		await get_tree().process_frame
 	_local_prompt_active = true
 	game_ui.show_property_prompt(action)
 	property_prompted.emit(action)
 
 func _host_resolve_property(requesting_player_id: int, accepted: bool) -> void:
-	if not is_host or phase != "decision" or pending_action.is_empty() or requesting_player_id != current_player_id:
+	if not is_host or phase not in ["decision", "event"] or pending_action.is_empty() or requesting_player_id != current_player_id:
 		return
-	if accepted and bool(pending_action.get("can_afford", false)):
+	if phase == "decision" and accepted and bool(pending_action.get("can_afford", false)):
 		_apply_property_action(requesting_player_id, pending_action)
 	_end_turn()
 
@@ -280,7 +365,7 @@ func _apply_property_action(player_id: int, action: Dictionary) -> void:
 		"capture":
 			var old_owner := int(property["owner_id"])
 			var old_owner_state: Dictionary = players_state[old_owner]
-			old_owner_state["coins"] = int(old_owner_state["coins"]) + int(roundi(float(price) * 0.8))
+			old_owner_state["coins"] = int(old_owner_state["coins"]) + GameRules.capture_owner_payout(price)
 			players_state[old_owner] = old_owner_state
 			property["owner_id"] = player_id
 			property["capture_count"] = int(property["capture_count"]) + 1
@@ -305,7 +390,16 @@ func _broadcast_state() -> void:
 		_apply_snapshot(snapshot)
 
 func _make_snapshot() -> Dictionary:
-	return {"players": players_state.duplicate(true), "properties": properties.duplicate(true), "current_player_id": current_player_id, "last_roll": last_roll, "phase": phase}
+	return {
+		"players": players_state.duplicate(true),
+		"properties": properties.duplicate(true),
+		"current_player_id": current_player_id,
+		"last_roll": last_roll,
+		"phase": phase,
+		"last_turn_tolls": last_turn_tolls.duplicate(true),
+		"last_event": last_event.duplicate(true),
+		"last_wheel_result": last_wheel_result,
+	}
 
 func _apply_snapshot(snapshot: Dictionary) -> void:
 	players_state = snapshot["players"].duplicate(true)
@@ -313,6 +407,9 @@ func _apply_snapshot(snapshot: Dictionary) -> void:
 	current_player_id = int(snapshot["current_player_id"])
 	last_roll = int(snapshot["last_roll"])
 	phase = String(snapshot["phase"])
+	last_turn_tolls = snapshot.get("last_turn_tolls", []).duplicate(true)
+	last_event = snapshot.get("last_event", {}).duplicate(true)
+	last_wheel_result = int(snapshot.get("last_wheel_result", 0))
 	game_is_started = true
 	_show_world()
 	board.set_property_states(properties)
@@ -321,6 +418,9 @@ func _apply_snapshot(snapshot: Dictionary) -> void:
 		if not player.is_moving:
 			player.place_at_cell(int(players_state[player_id]["cell"]), board)
 	_refresh_ui()
+	if phase == "waiting" or phase == "moving":
+		_local_prompt_active = false
+		game_ui.hide_property_prompt()
 	turn_camera.position = _player_node(current_player_id).position
 	turn_camera.reset_smoothing()
 	state_applied.emit()

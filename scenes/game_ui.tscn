@@ -128,12 +128,12 @@ text = "当前玩家：Player 1"
 layout_mode = 2
 theme_override_colors/font_color = Color(1, 0.82, 0.3, 1)
 theme_override_font_sizes/font_size = 28
-text = "自己的金币：10000"
+text = "自己的金币：0"
 
 [node name="AllCoinsLabel" type="Label" parent="HUD/InfoPanel/Labels"]
 layout_mode = 2
 theme_override_font_sizes/font_size = 23
-text = "P1 10000  |  P2 10000"
+text = "P1 0  |  P2 0"
 
 [node name="CellLabel" type="Label" parent="HUD/InfoPanel/Labels"]
 layout_mode = 2

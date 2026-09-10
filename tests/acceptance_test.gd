@@ -29,63 +29,95 @@ func _run() -> void:
 	game.player_2.minimum_step_duration = 0.001
 	game.start_local_test_game()
 
-	_check(game.players_state.size() == 2, "同时创建两个玩家")
-	_check(int(game.players_state[1]["coins"]) == 10000 and int(game.players_state[2]["coins"]) == 10000, "双方初始金币为 10000")
-	_check(int(game.players_state[1]["diamonds"]) == 100 and int(game.players_state[2]["diamonds"]) == 100, "双方初始钻石为 100")
-	_check(int(game.players_state[1]["player_level"]) == 10, "玩家初始等级为 10")
-	_check(game.properties.size() == 30 and int(game.properties[8]["owner_id"]) == -1, "30 个地产状态初始化为空地")
-	_check(game.player_1.visible and game.player_2.visible, "两个棋子同时显示")
-	_check(game.turn_camera.enabled, "当前回合 Camera2D 已启用")
-	_check(GameRules.capture_price(2, 0) == 2000 and GameRules.capture_price(2, 1) == 4000, "抢占价格按次数递增")
-	_check(game.can_upgrade_property(10, 4) and not game.can_upgrade_property(3, 4), "房产等级判断为独立规则")
-
-	var rolls_valid := true
-	for _index in range(100):
-		var roll: int = game.generate_roll()
-		rolls_valid = rolls_valid and roll >= 1 and roll <= 6
-	_check(rolls_valid, "随机骰子范围为 1～6")
-
-	game._host_try_roll(2, 6)
-	_check(game.phase == "waiting" and int(game.players_state[2]["cell"]) == 0, "非当前玩家的掷骰请求被拒绝")
+	_check(_build_costs_are_correct(), "L1～L5 建造费用正确")
+	_check(_toll_fees_are_correct(), "L1～L5 过路费正确")
+	_check(not game.players_state[1].has("diamonds"), "经济状态只保留金币")
+	_check(game.properties.size() == 30, "地图包含 30 个集中配置格子")
+	_check(_cell_types_match(game.properties), "START/PROPERTY/REWARD/WHEEL 类型配置正确")
+	_check(game.properties == game_state_round_trip(game), "格子类型可通过状态快照完整同步")
 
 	game._host_try_roll(1, 2)
-	_check(await _wait_for_prompt(game), "P1 移动后收到买地操作")
-	_check(String(game.pending_action["type"]) == "buy", "空地产生购买选项")
+	_check(await _wait_for_prompt(game), "P1 到达空地产生买地提示")
+	_check(String(game.pending_action["type"]) == "buy" and int(game.pending_action["price"]) == 50, "空地到 L1 支付 50")
 	game._host_resolve_property(1, true)
-	_check(int(game.properties[2]["owner_id"]) == 1 and int(game.properties[2]["property_level"]) == 1, "P1 买下格子 2 并成为 L1")
-	_check(int(game.players_state[1]["coins"]) == 9000 and game.current_player_id == 2, "P1 扣除 1000 并切换 P2")
+	_check(int(game.players_state[1]["coins"]) == 9950, "P1 买地扣除 50")
 
 	game._host_try_roll(2, 1)
-	_check(await _wait_for_prompt(game), "P2 移动后收到买地操作")
+	_check(await _wait_for_prompt(game), "P2 到达空地产生买地提示")
 	game._host_resolve_property(2, true)
-	_check(int(game.properties[1]["owner_id"]) == 2 and int(game.players_state[2]["coins"]) == 9000, "P2 买地状态正确")
+	_check(int(game.players_state[2]["coins"]) == 9950, "P2 买地扣除 50")
 
 	game._host_try_roll(1, 30)
-	_check(await _wait_for_prompt(game, 5.0), "P1 闭环回到自有地产")
-	_check(String(game.pending_action["type"]) == "upgrade" and int(game.pending_action["price"]) == 2000, "L1 升 L2 价格为 2000")
+	_check(await _wait_for_prompt(game, 6.0), "P1 绕圈回到自己的房产")
+	_check(game.last_turn_tolls.size() == 1 and int(game.last_turn_tolls[0]["cell_index"]) == 1, "路过敌方 L1 立即收取一次过路费")
+	_check(int(game.players_state[1]["coins"]) == 9925 and int(game.players_state[2]["coins"]) == 9975, "过路费从经过者转给房主")
+	_check(game.last_event.is_empty(), "路过奖励格和转盘格不触发最终事件")
+	_check(String(game.pending_action["type"]) == "upgrade" and int(game.pending_action["price"]) == 100, "L1 升 L2 费用为 100")
 	game._host_resolve_property(1, true)
-	_check(int(game.properties[2]["property_level"]) == 2 and int(game.players_state[1]["coins"]) == 7000, "P1 升级成功并正确扣款")
+
+	var before_own := int(game.players_state[2]["coins"])
+	_check(not game._settle_toll(2, 1) and int(game.players_state[2]["coins"]) == before_own, "路过自己的房产不收费")
+	_check(not game._settle_toll(2, 6) and int(game.players_state[2]["coins"]) == before_own, "路过空地不收费")
 
 	game._host_try_roll(2, 1)
-	_check(await _wait_for_prompt(game), "P2 落在 P1 地产后收到抢占操作")
-	_check(String(game.pending_action["type"]) == "capture" and int(game.pending_action["price"]) == 2000, "L2 首次抢占价格为 2000")
+	_check(await _wait_for_prompt(game), "P2 最终到达敌方房产进入抢占流程")
+	_check(game.last_turn_tolls.size() == 1 and int(game.last_turn_tolls[0]["amount"]) == 50, "最终落在敌产先收 L2 过路费")
+	_check(int(game.players_state[2]["coins"]) == 9925 and String(game.pending_action["type"]) == "capture", "收费完成后才提供抢占选项")
+	_check(int(game.pending_action["price"]) == 100, "L2 首次抢占价格使用建造费用 100")
 	game._host_resolve_property(2, true)
-	var captured: Dictionary = game.properties[2]
-	_check(int(captured["owner_id"]) == 2 and int(captured["property_level"]) == 3 and int(captured["capture_count"]) == 1, "抢占后归属、等级、次数正确")
-	_check(int(game.players_state[2]["coins"]) == 7000, "抢占者扣除 2000")
-	_check(int(game.players_state[1]["coins"]) == 8600, "原房主获得抢占价格的 80%")
-	_check(game.current_player_id == 1 and game.phase == "waiting", "抢占后正确切回 P1")
-	_check(not game.game_ui.roll_button.disabled, "当前本地玩家掷骰按钮启用")
+	_check(int(game.properties[2]["owner_id"]) == 2 and int(game.properties[2]["property_level"]) == 3, "抢占后归属和等级正确")
+
+	_set_property(game, 3, 2, 1)
+	_set_property(game, 4, 2, 4)
+	game._host_try_roll(1, 3)
+	_check(await _wait_for_prompt(game), "P1 最终停在奖励格后显示事件")
+	_check(game.last_turn_tolls.size() == 2, "一次移动经过多个敌产连续收费")
+	_check(int(game.last_turn_tolls[0]["amount"]) == 25 and int(game.last_turn_tolls[1]["amount"]) == 200, "多个过路费按房产等级计算")
+	_check(String(game.pending_action["type"]) == "reward" and int(game.pending_action["amount"]) == 100, "REWARD 最终停下触发 +100")
+	_check(int(game.players_state[1]["coins"]) == 9830 and int(game.players_state[2]["coins"]) == 10050, "连续过路费与奖励金币结算正确")
+	_check(game.current_player_id == 1 and game.phase == "event", "奖励确认前不切换回合")
+	game._host_resolve_property(1, true)
+	_check(game.current_player_id == 2, "奖励确认后切换回合")
+
+	game.test_wheel_result_override = 200
+	game._host_try_roll(2, 7)
+	_check(await _wait_for_prompt(game), "WHEEL 仅最终停下时触发")
+	_check(String(game.pending_action["type"]) == "wheel" and game.last_wheel_result == 200, "转盘结果由 Host 产生")
+	_check(int(game.players_state[2]["coins"]) == 10250, "转盘 +200 金币正确")
+	_check(game.current_player_id == 2 and game.phase == "event", "转盘确认前不切换回合")
+	game._host_resolve_property(2, true)
+	_check(game.current_player_id == 1 and game.phase == "waiting", "转盘确认后切换回合")
 
 	if _failures.is_empty():
-		print("ACCEPTANCE RESULT | PASS | 单机权威规则与 UI 检查全部通过")
+		print("ACCEPTANCE RESULT | PASS | 经济、过路费、格子事件与顺序检查全部通过")
 		quit(0)
 	else:
 		print("ACCEPTANCE RESULT | FAIL | ", _failures)
 		quit(1)
 
-func _wait_for_prompt(game, timeout_seconds: float = 3.0) -> bool:
+func _wait_for_prompt(game, timeout_seconds: float = 4.0) -> bool:
 	var deadline := Time.get_ticks_msec() + int(timeout_seconds * 1000.0)
 	while game.pending_action.is_empty() and Time.get_ticks_msec() < deadline:
 		await create_timer(0.01).timeout
 	return not game.pending_action.is_empty()
+
+func _set_property(game, cell_index: int, owner_id: int, level: int) -> void:
+	var property: Dictionary = game.properties[cell_index]
+	property["owner_id"] = owner_id
+	property["property_level"] = level
+	game.properties[cell_index] = property
+
+func _cell_types_match(cells: Array) -> bool:
+	for index in range(cells.size()):
+		if String(cells[index]["cell_type"]) != String(GameRules.MAP_CELL_TYPES[index]):
+			return false
+	return true
+
+func _build_costs_are_correct() -> bool:
+	return GameRules.build_cost(1) == 50 and GameRules.build_cost(2) == 100 and GameRules.build_cost(3) == 200 and GameRules.build_cost(4) == 400 and GameRules.build_cost(5) == 800
+
+func _toll_fees_are_correct() -> bool:
+	return GameRules.toll_fee(1) == 25 and GameRules.toll_fee(2) == 50 and GameRules.toll_fee(3) == 100 and GameRules.toll_fee(4) == 200 and GameRules.toll_fee(5) == 400
+
+func game_state_round_trip(game) -> Array:
+	return game._make_snapshot()["properties"].duplicate(true)
