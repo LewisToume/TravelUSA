@@ -1,0 +1,14 @@
+# Godot generated cache
+.godot/
+
+# Local exports and build outputs
+builds/
+*.apk
+*.aab
+*.ipa
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+*.tmp
+

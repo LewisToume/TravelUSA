@@ -1,0 +1,16 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://scripts/game_manager.gd" id="1_manager"]
+[ext_resource type="PackedScene" path="res://scenes/board.tscn" id="2_board"]
+[ext_resource type="PackedScene" path="res://scenes/player.tscn" id="3_player"]
+[ext_resource type="PackedScene" path="res://scenes/game_ui.tscn" id="4_ui"]
+
+[node name="Main" type="Node2D"]
+script = ExtResource("1_manager")
+
+[node name="Board" parent="." instance=ExtResource("2_board")]
+
+[node name="Player" parent="." instance=ExtResource("3_player")]
+
+[node name="GameUI" parent="." instance=ExtResource("4_ui")]
+
