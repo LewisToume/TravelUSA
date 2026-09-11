@@ -46,6 +46,7 @@ var displayed_event_id := 0
 var test_mode := false
 var test_wheel_result_override := 0
 var test_wheel_spin_duration := 0.0
+var test_encounter_override := ""
 var _random := RandomNumberGenerator.new()
 var targeting_card_id := ""
 var selected_card_target := -1
@@ -57,6 +58,10 @@ var save_temp_path := "user://savegame.tmp"
 var save_load_failed := false
 var _last_time_check := 0
 var _last_autosave_time := 0
+var room_wordbook: Array = QuestionBank.default_entries()
+var room_wordbook_name := "内置基础词书"
+var room_wordbook_id := "builtin-default"
+var pending_wordbook_import: Dictionary = {}
 
 func _ready() -> void:
 	_random.randomize()
@@ -94,6 +99,9 @@ func _ready() -> void:
 	game_ui.repay_tax_requested.connect(request_repay_tax)
 	game_ui.asset_management_requested.connect(_show_asset_management)
 	game_ui.asset_action_requested.connect(request_asset_action)
+	game_ui.wordbook_file_selected.connect(_on_wordbook_file_selected)
+	game_ui.wordbook_import_confirmed.connect(_confirm_wordbook_import)
+	game_ui.wordbook_import_cancelled.connect(func() -> void: pending_wordbook_import = {})
 	board.target_cell_selected.connect(_select_cell_target)
 	multiplayer.peer_connected.connect(_on_peer_connected)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
@@ -109,6 +117,7 @@ func _process(_delta: float) -> void:
 		_check_protection_expiry()
 		_check_daily_taxes()
 		_check_stamina_recovery()
+		_check_encounter_expiry()
 		if _server_time() - _last_autosave_time >= 30:
 			_save_game()
 
@@ -127,6 +136,7 @@ func host_game(port: int = -1) -> bool:
 	_check_player_login(1)
 	_check_daily_taxes()
 	game_ui.set_lobby_buttons_enabled(false)
+	game_ui.set_host_controls(true, room_wordbook_name, room_wordbook.size())
 	game_ui.set_lobby_status("Host 已创建，等待客户端连接（端口 %d）" % target_port)
 	return true
 
@@ -140,6 +150,7 @@ func join_game(address: String = "127.0.0.1", port: int = -1) -> bool:
 		return false
 	multiplayer.multiplayer_peer = client
 	is_host = false
+	game_ui.set_host_controls(false, room_wordbook_name, room_wordbook.size())
 	game_ui.set_lobby_buttons_enabled(false)
 	game_ui.set_lobby_status("正在连接 %s:%d…" % [target_address, target_port])
 	return true
@@ -149,6 +160,7 @@ func start_local_test_game() -> void:
 	local_player_id = 1
 	game_is_started = true
 	active_player_ids = [1, 2]
+	game_ui.set_host_controls(true, room_wordbook_name, room_wordbook.size())
 	_show_world()
 	_apply_snapshot(_make_snapshot())
 	game_started.emit()
@@ -253,6 +265,44 @@ func request_asset_action(cell_index: int, action_type: String) -> void:
 	else:
 		_request_asset_action_rpc.rpc_id(1, cell_index, action_type)
 
+func _on_wordbook_file_selected(path: String) -> void:
+	if not is_host: return
+	var extension := path.get_extension().to_lower()
+	if extension not in ["csv", "txt"]:
+		game_ui.show_toast("仅支持 CSV/TXT 词书")
+		return
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		game_ui.show_toast("无法读取词书文件")
+		return
+	_prepare_wordbook_import(path.get_file(), file.get_as_text(), extension)
+
+func _prepare_wordbook_import(book_name: String, content: String, extension: String) -> Dictionary:
+	if not is_host: return {}
+	var parsed := QuestionBank.parse_content(content, extension)
+	pending_wordbook_import = parsed.duplicate(true)
+	pending_wordbook_import["name"] = book_name
+	pending_wordbook_import["id"] = "%s-%d" % [book_name.get_basename(), content.hash()]
+	game_ui.show_wordbook_preview(book_name, parsed)
+	return parsed
+
+func _confirm_wordbook_import() -> bool:
+	if not is_host or pending_wordbook_import.is_empty(): return false
+	var entries: Array = pending_wordbook_import.get("entries", [])
+	if entries.is_empty():
+		game_ui.show_toast("词书至少需要 1 条有效词条")
+		return false
+	room_wordbook = entries.duplicate(true)
+	room_wordbook_name = String(pending_wordbook_import.get("name", "导入词书"))
+	room_wordbook_id = String(pending_wordbook_import.get("id", "imported"))
+	pending_wordbook_import = {}
+	game_ui.hide_wordbook_preview()
+	game_ui.set_host_controls(true, room_wordbook_name, room_wordbook.size())
+	_notify("wordbook", 1, -1, -1, room_wordbook.size(), "Host 已将房间词书切换为 %s（%d 条）" % [room_wordbook_name, room_wordbook.size()])
+	_broadcast_state()
+	_save_game()
+	return true
+
 func _on_card_selected(card_id: String) -> void:
 	if _is_bankrupt(local_player_id):
 		game_ui.show_toast("今日已破产，无法使用卡牌")
@@ -352,7 +402,7 @@ func _show_force_buy_confirmation() -> void:
 	var cell_index := int(players_state[local_player_id]["cell"])
 	var property: Dictionary = properties[cell_index]
 	var level := int(property.get("property_level", 0))
-	var price := GameRules.capture_price(level, int(property.get("capture_count", 0)), String(property.get("property_type", GameRules.PROPERTY_HOUSE)))
+	var price := _capture_price_for_player(local_player_id, property)
 	game_ui.show_card_confirmation("确认使用强购卡", "房主：Player %d\n等级：L%d\n价格：%d 金币" % [int(property.get("owner_id", -1)), level, price])
 
 func _request_force_buy_from_property() -> void:
@@ -424,10 +474,12 @@ func _animate_action(player_id: int, action_id: int, start_cell: int, move_dista
 	var player := _player_node(player_id)
 	player.place_at_cell(start_cell, board)
 	player.move_steps_direction(move_distance, direction, board)
-	for _step in range(move_distance):
+	for step_index in range(move_distance):
 		var reached_cell: int = await player.step_reached
 		if is_host and _settle_step_toll(player_id, reached_cell) and reached_cell == target_cell:
 			action_paid_final_toll[action_id] = true
+		if is_host:
+			_process_encounter_step(player_id, reached_cell, step_index == move_distance - 1)
 	await player.movement_finished
 	player.place_at_cell(target_cell, board)
 	animation_done[action_id] = true
@@ -548,6 +600,7 @@ func _request_quiz_answer_rpc(event_id: int, option_index: int) -> void:
 		_host_record_response(player_id, event_id, "quiz_answer", false, option_index)
 
 func _host_try_roll(requesting_player_id: int, forced_roll: int = -1) -> bool:
+	_expire_encounter_if_needed(requesting_player_id)
 	if not is_host or not game_is_started or not can_player_roll(requesting_player_id):
 		return false
 	var roll := generate_roll() if forced_roll < 0 else forced_roll
@@ -564,8 +617,9 @@ func _host_try_roll(requesting_player_id: int, forced_roll: int = -1) -> bool:
 	state["last_move_distance"] = move_distance
 	state["last_move_was_speed"] = move_distance != roll
 	var protected_action := String(state.get("bankruptcy_state", GameRules.BANKRUPTCY_NORMAL)) == GameRules.BANKRUPTCY_PROTECTED and _server_time() < int(state.get("protection_end_time", 0))
-	state["toll_free_this_action"] = false if protected_action else bool(state.get("toll_free_next_action", false))
-	if not protected_action: state["toll_free_next_action"] = false
+	var encounter_toll_free := String(state.get("encounter_type", "")) == GameRules.ENCOUNTER_WEALTH_GOD
+	state["toll_free_this_action"] = false if protected_action or encounter_toll_free else bool(state.get("toll_free_next_action", false))
+	if not protected_action and not encounter_toll_free: state["toll_free_next_action"] = false
 	state["reverse_next_move"] = false
 	state["speed_next_move"] = false
 	state["status_effects"]["reverse_next_move"] = false
@@ -614,6 +668,8 @@ func _resolve_landing(player_id: int, action_id: int, cell_index: int) -> void:
 		await _resolve_shop(player_id, cell_index)
 	elif cell_type == GameRules.CELL_QUIZ:
 		await _resolve_quiz(player_id, cell_index)
+	elif cell_type == GameRules.CELL_ENCOUNTER:
+		_resolve_encounter(player_id, cell_index)
 	_finish_player_action(player_id)
 
 func _resolve_property_landing(player_id: int, cell_index: int, final_toll_paid: bool) -> void:
@@ -654,6 +710,14 @@ func _settle_step_toll(player_id: int, cell_index: int) -> bool:
 	if owner_id == -1 or owner_id == player_id or amount <= 0:
 		return false
 	var payer: Dictionary = players_state[player_id]
+	var encounter_type := _encounter_type(player_id)
+	if encounter_type == GameRules.ENCOUNTER_DEBT_COLLECTOR:
+		amount *= 2
+	if encounter_type == GameRules.ENCOUNTER_WEALTH_GOD:
+		_notify("encounter", player_id, owner_id, cell_index, amount, "财神：Player %d 免除 %d 金币过路费" % [player_id, amount])
+		_send_private_toast(player_id, "财神：免除 %d 金币过路费" % amount)
+		_broadcast_state()
+		return true
 	if String(payer.get("bankruptcy_state", GameRules.BANKRUPTCY_NORMAL)) == GameRules.BANKRUPTCY_PROTECTED and _server_time() < int(payer.get("protection_end_time", 0)):
 		_notify("bankruptcy_protection", player_id, owner_id, cell_index, amount, "Player %d 处于破产保护，免除 %d 金币过路费" % [player_id, amount])
 		_send_private_toast(player_id, "破产保护：免除 %d 金币过路费" % amount)
@@ -698,6 +762,115 @@ func _resolve_reward(player_id: int, cell_index: int) -> void:
 	await _request_player_decision(player_id, action)
 	_save_game()
 
+func _resolve_encounter(player_id: int, cell_index: int) -> void:
+	_expire_encounter_if_needed(player_id)
+	if _encounter_type(player_id) != GameRules.ENCOUNTER_NONE:
+		_send_private_toast(player_id, "当前奇遇仍在持续，本次不再获得新奇遇")
+		return
+	var encounter_type := test_encounter_override if test_mode and test_encounter_override in GameRules.ENCOUNTER_TYPES else String(GameRules.ENCOUNTER_TYPES[_random.randi_range(0, GameRules.ENCOUNTER_TYPES.size() - 1)])
+	var state: Dictionary = players_state[player_id]
+	state["encounter_type"] = encounter_type
+	state["encounter_remaining_steps"] = GameRules.ENCOUNTER_DURATION_STEPS
+	state["encounter_trigger_count"] = 0
+	state["encounter_start_date"] = _server_date()
+	players_state[player_id] = state
+	var detail := ""
+	match encounter_type:
+		GameRules.ENCOUNTER_LUCKY_STAR:
+			state = players_state[player_id]
+			var inventory: Dictionary = state["inventory"]
+			var received: Array[String] = []
+			for _draw in range(2):
+				var card_id := String(GameRules.CARD_IDS[_random.randi_range(0, GameRules.CARD_IDS.size() - 1)])
+				inventory[card_id] = int(inventory.get(card_id, 0)) + 1
+				received.append(String(GameRules.CARD_NAMES[card_id]))
+			state["inventory"] = inventory
+			players_state[player_id] = state
+			detail = "，立即获得%s" % "、".join(received)
+		GameRules.ENCOUNTER_WEALTH_GOD:
+			var reward := _random.randi_range(100, 999)
+			state = players_state[player_id]
+			state["coins"] = int(state["coins"]) + reward
+			state["daily_taxable_income"] = int(state.get("daily_taxable_income", 0)) + reward
+			players_state[player_id] = state
+			detail = "，立即获得 %d 金币" % reward
+		GameRules.ENCOUNTER_BROOM_STAR:
+			state = players_state[player_id]
+			var inventory: Dictionary = state["inventory"]
+			var total := 0
+			for card_id in GameRules.CARD_IDS: total += int(inventory.get(card_id, 0))
+			var keep := ceili(float(total) * 0.5)
+			var remove_count := total - keep
+			while remove_count > 0:
+				var removed := false
+				for card_id in GameRules.CARD_IDS:
+					if remove_count <= 0: break
+					if int(inventory.get(card_id, 0)) > 0:
+						inventory[card_id] = int(inventory[card_id]) - 1
+						remove_count -= 1
+						removed = true
+				if not removed: break
+			state["inventory"] = inventory
+			players_state[player_id] = state
+			detail = "，卡牌总数由 %d 减为 %d" % [total, keep]
+		GameRules.ENCOUNTER_DEBT_COLLECTOR:
+			var loss := _random.randi_range(100, 999)
+			var actual := _apply_passive_payment(player_id, loss, "encounter")
+			detail = "，立即损失 %d 金币" % actual
+	var name := GameRules.encounter_name(encounter_type)
+	_notify("encounter", player_id, -1, cell_index, 0, "Player %d 获得奇遇【%s】%s" % [player_id, name, detail])
+	_broadcast_state()
+	_save_game()
+
+func _process_encounter_step(player_id: int, cell_index: int, is_final_step: bool) -> void:
+	if _encounter_type(player_id) == GameRules.ENCOUNTER_NONE: return
+	var state: Dictionary = players_state[player_id]
+	if int(state.get("encounter_remaining_steps", 0)) <= 0: return
+	if String(state["encounter_type"]) == GameRules.ENCOUNTER_LUCKY_STAR and int(state.get("encounter_trigger_count", 0)) < GameRules.ENCOUNTER_MAX_TRIGGERS:
+		var property: Dictionary = properties[cell_index]
+		var level := int(property.get("property_level", 0))
+		if String(property.get("cell_type", "")) == GameRules.CELL_PROPERTY and String(property.get("property_type", "")) == GameRules.PROPERTY_HOUSE and int(property.get("owner_id", -1)) == player_id and GameRules.can_upgrade_property(int(state.get("player_level", 0)), level, GameRules.PROPERTY_HOUSE):
+			property["property_level"] = level + 1
+			properties[cell_index] = property
+			state["encounter_trigger_count"] = int(state["encounter_trigger_count"]) + 1
+			_broadcast_property_effect(cell_index, "upgrade")
+			_notify("encounter", player_id, -1, cell_index, 0, "幸运星：Player %d 的 %d 号住宅免费升级至 L%d" % [player_id, cell_index, level + 1])
+	state["encounter_remaining_steps"] = maxi(0, int(state["encounter_remaining_steps"]) - 1)
+	players_state[player_id] = state
+	if int(state["encounter_remaining_steps"]) == 0 and not is_final_step:
+		_expire_encounter(player_id, "累计移动 15 格")
+	else:
+		_broadcast_state()
+
+func _encounter_type(player_id: int) -> String:
+	return String(players_state[player_id].get("encounter_type", GameRules.ENCOUNTER_NONE)) if players_state.has(player_id) else GameRules.ENCOUNTER_NONE
+
+func _check_encounter_expiry() -> void:
+	for player_id in active_player_ids: _expire_encounter_if_needed(player_id)
+
+func _expire_encounter_if_needed(player_id: int) -> bool:
+	if _encounter_type(player_id) == GameRules.ENCOUNTER_NONE: return false
+	var state: Dictionary = players_state[player_id]
+	if int(state.get("encounter_remaining_steps", 0)) <= 0:
+		_expire_encounter(player_id, "累计移动 15 格")
+		return true
+	if not String(state.get("encounter_start_date", "")).is_empty() and _server_date() > String(state["encounter_start_date"]):
+		_expire_encounter(player_id, "跨过 24:00")
+		return true
+	return false
+
+func _expire_encounter(player_id: int, reason: String) -> void:
+	var state: Dictionary = players_state[player_id]
+	var old_name := GameRules.encounter_name(String(state.get("encounter_type", "")))
+	state["encounter_type"] = GameRules.ENCOUNTER_NONE
+	state["encounter_remaining_steps"] = 0
+	state["encounter_trigger_count"] = 0
+	state["encounter_start_date"] = ""
+	players_state[player_id] = state
+	_notify("encounter", player_id, -1, int(state.get("cell", -1)), 0, "Player %d 的奇遇【%s】已结束（%s）" % [player_id, old_name, reason])
+	_broadcast_state()
+	_save_game()
+
 func _resolve_wheel(player_id: int, cell_index: int) -> void:
 	var result := _choose_wheel_result()
 	last_wheel_result = result
@@ -732,10 +905,13 @@ func _resolve_quiz(player_id: int, cell_index: int) -> void:
 	var action := {"type": "quiz", "player_id": player_id, "cell_index": cell_index, "event_id": next_event_id, "correct_count": 0, "earned": 0}
 	next_event_id += 1
 	pending_actions[player_id] = action
+	var selected_entries := _select_quiz_entries(player_id, GameRules.QUIZ_QUESTION_COUNT)
+	var question_types: Array = [QuestionBank.TYPE_EN_TO_ZH, QuestionBank.TYPE_EN_TO_ZH, QuestionBank.TYPE_EN_TO_ZH, QuestionBank.TYPE_EN_TO_ZH, QuestionBank.TYPE_ZH_TO_EN, QuestionBank.TYPE_ZH_TO_EN, QuestionBank.TYPE_ZH_TO_EN, QuestionBank.TYPE_ZH_TO_EN, QuestionBank.TYPE_SPELLING, QuestionBank.TYPE_SPELLING]
+	_shuffle_values(question_types)
 	for question_index in range(GameRules.QUIZ_QUESTION_COUNT):
 		if _is_bankrupt(player_id): break
-		var question := QuestionBank.get_question(question_index + player_id)
-		action.merge({"question_number": question_index + 1, "question": question["question"], "options": question["options"], "correct": int(question["correct"])}, true)
+		var question := QuestionBank.build_question(selected_entries[question_index], room_wordbook, String(question_types[question_index]), _random)
+		action.merge({"question_number": question_index + 1, "word": question["word"], "question_type": question["question_type"], "question": question["question"], "options": question["options"], "correct": int(question["correct"])}, true)
 		pending_actions[player_id] = action.duplicate(true)
 		_send_quiz_question(player_id, action)
 		var selected := await _await_quiz_answer(player_id, int(action["event_id"]))
@@ -747,14 +923,50 @@ func _resolve_quiz(player_id: int, cell_index: int) -> void:
 			action["correct_count"] = int(action["correct_count"]) + 1
 			action["earned"] = int(action["earned"]) + GameRules.QUIZ_REWARD_PER_CORRECT
 		_broadcast_state()
-	_notify("quiz", player_id, -1, cell_index, int(action["earned"]), "Player %d 完成五连答题，获得 %d 金币" % [player_id, int(action["earned"])])
+	_notify("quiz", player_id, -1, cell_index, int(action["earned"]), "Player %d 完成十连答题，获得 %d 金币" % [player_id, int(action["earned"])])
 	_close_event(player_id, int(action["event_id"]))
 	_save_game()
 
 func _send_quiz_question(player_id: int, action: Dictionary) -> void:
 	var peer_id := int(player_peer_ids.get(player_id, 1))
 	if peer_id == 1: _show_quiz_question_remote(action)
-	else: _show_quiz_question_remote.rpc_id(peer_id, action)
+	else:
+		var client_action := action.duplicate(true)
+		client_action.erase("correct")
+		_show_quiz_question_remote.rpc_id(peer_id, client_action)
+
+func _select_quiz_entries(player_id: int, count: int) -> Array:
+	var state: Dictionary = players_state[player_id]
+	var recent: Array = state.get("recent_question_words", []).duplicate()
+	var fresh: Array = []
+	var fallback: Array = []
+	for entry in room_wordbook:
+		var word := String(entry.get("word", "")).to_lower()
+		if word not in recent: fresh.append(entry)
+		else: fallback.append(entry)
+	_shuffle_values(fresh); _shuffle_values(fallback)
+	var selected: Array = []
+	for entry in fresh:
+		if selected.size() >= count: break
+		selected.append(entry)
+	for entry in fallback:
+		if selected.size() >= count: break
+		if entry not in selected: selected.append(entry)
+	while selected.size() < count and not room_wordbook.is_empty():
+		selected.append(room_wordbook[selected.size() % room_wordbook.size()])
+	for entry in selected:
+		var word := String(entry.get("word", "")).to_lower()
+		if word in recent: recent.erase(word)
+		recent.append(word)
+	while recent.size() > GameRules.RECENT_QUESTION_LIMIT: recent.pop_front()
+	state["recent_question_words"] = recent
+	players_state[player_id] = state
+	return selected
+
+func _shuffle_values(values: Array) -> void:
+	for index in range(values.size() - 1, 0, -1):
+		var other := _random.randi_range(0, index)
+		var temporary = values[index]; values[index] = values[other]; values[other] = temporary
 
 func _await_quiz_answer(player_id: int, event_id: int) -> int:
 	while true:
@@ -845,6 +1057,13 @@ func _host_use_card(player_id: int, card_id: String, target: Variant) -> bool:
 		return false
 	if _has_tax_debt(player_id) and card_id in [GameRules.CARD_BUILD, GameRules.CARD_FORCE_BUY]:
 		_send_private_toast(player_id, "欠税期间不能升级或强购房产")
+		return false
+	var encounter_type := _encounter_type(player_id)
+	if (encounter_type == GameRules.ENCOUNTER_WEALTH_GOD and card_id == GameRules.CARD_TOLL_FREE) or (encounter_type == GameRules.ENCOUNTER_LUCKY_STAR and card_id == GameRules.CARD_BUILD):
+		_send_private_toast(player_id, "当前奇遇已提供此效果，无法使用该卡牌")
+		return false
+	if encounter_type == GameRules.ENCOUNTER_BROOM_STAR and card_id in [GameRules.CARD_BUILD, GameRules.CARD_FORCE_BUY]:
+		_send_private_toast(player_id, "扫把星期间不能进行房产投资")
 		return false
 	var state: Dictionary = players_state[player_id]
 	var inventory: Dictionary = state["inventory"]
@@ -938,7 +1157,7 @@ func _card_force_buy(player_id: int) -> bool:
 	var owner_id := int(property["owner_id"])
 	var property_type := String(property.get("property_type", GameRules.PROPERTY_HOUSE))
 	if String(property["cell_type"]) != GameRules.CELL_PROPERTY or owner_id in [-1, player_id] or not GameRules.can_force_buy(property_type, int(property["property_level"])): return false
-	var price := GameRules.capture_price(int(property["property_level"]), int(property["capture_count"]), property_type)
+	var price := _capture_price_for_player(player_id, property)
 	if int(players_state[player_id]["coins"]) < price: return false
 	_apply_property_action(player_id, {"type": "capture", "cell_index": cell_index, "price": price})
 	return true
@@ -1060,7 +1279,7 @@ func _build_property_action(player_id: int, cell_index: int) -> Dictionary:
 	var level := int(property["property_level"])
 	var property_type := String(property.get("property_type", GameRules.PROPERTY_HOUSE))
 	var player: Dictionary = players_state[player_id]
-	if _has_tax_debt(player_id):
+	if _has_tax_debt(player_id) or _encounter_type(player_id) == GameRules.ENCOUNTER_BROOM_STAR:
 		return {}
 	var action: Dictionary = {"cell_index": cell_index, "owner_id": owner_id, "property_level": level, "property_type": property_type, "player_id": player_id}
 	if owner_id == -1:
@@ -1068,7 +1287,7 @@ func _build_property_action(player_id: int, cell_index: int) -> Dictionary:
 	elif owner_id == player_id and GameRules.can_upgrade_property(int(player["player_level"]), level, property_type):
 		action.merge({"type": "upgrade", "price": GameRules.upgrade_price(level, property_type)})
 	elif owner_id != player_id and level >= 1 and level <= GameRules.MAX_CAPTURABLE_PROPERTY_LEVEL:
-		action.merge({"type": "capture", "price": GameRules.capture_price(level, int(property["capture_count"]), property_type)})
+		action.merge({"type": "capture", "price": _capture_price_for_player(player_id, property)})
 		action["force_buy_available"] = int(player["inventory"].get(GameRules.CARD_FORCE_BUY, 0)) > 0 and GameRules.can_force_buy(property_type, level)
 	else:
 		return {}
@@ -1077,7 +1296,7 @@ func _build_property_action(player_id: int, cell_index: int) -> Dictionary:
 
 func _apply_property_action(player_id: int, action: Dictionary) -> bool:
 	var cell_index := int(action["cell_index"])
-	if cell_index < 0 or cell_index >= properties.size() or _is_bankrupt(player_id) or _has_tax_debt(player_id):
+	if cell_index < 0 or cell_index >= properties.size() or _is_bankrupt(player_id) or _has_tax_debt(player_id) or _encounter_type(player_id) == GameRules.ENCOUNTER_BROOM_STAR:
 		return false
 	var price := int(action["price"])
 	var player: Dictionary = players_state[player_id]
@@ -1092,11 +1311,14 @@ func _apply_property_action(player_id: int, action: Dictionary) -> bool:
 		"upgrade":
 			property["property_level"] = int(property["property_level"]) + 1
 		"capture":
+			var guest_discount_used := _encounter_type(player_id) == GameRules.ENCOUNTER_PROPERTY_GUEST and String(property.get("property_type", GameRules.PROPERTY_HOUSE)) == GameRules.PROPERTY_HOUSE and int(players_state[player_id].get("encounter_trigger_count", 0)) < GameRules.ENCOUNTER_MAX_TRIGGERS
 			var old_owner := int(property["owner_id"])
 			var seller_income := GameRules.capture_seller_income(int(property["property_level"]), int(property["capture_count"]), String(property.get("property_type", GameRules.PROPERTY_HOUSE)))
 			_apply_debt_priority_income(old_owner, seller_income)
 			property["owner_id"] = player_id
 			property["capture_count"] = int(property["capture_count"]) + 1
+			if guest_discount_used:
+				player["encounter_trigger_count"] = int(player.get("encounter_trigger_count", 0)) + 1
 	players_state[player_id] = player
 	properties[cell_index] = property
 	if int(player["coins"]) == 0: _declare_bankruptcy(player_id, "property")
@@ -1104,6 +1326,15 @@ func _apply_property_action(player_id: int, action: Dictionary) -> bool:
 	_broadcast_property_effect(cell_index, effect_type)
 	_save_game()
 	return true
+
+func _capture_price_for_player(player_id: int, property: Dictionary) -> int:
+	var price := GameRules.capture_price(int(property.get("property_level", 0)), int(property.get("capture_count", 0)), String(property.get("property_type", GameRules.PROPERTY_HOUSE)))
+	var encounter_type := _encounter_type(player_id)
+	if encounter_type == GameRules.ENCOUNTER_PROPERTY_GUEST and String(property.get("property_type", GameRules.PROPERTY_HOUSE)) == GameRules.PROPERTY_HOUSE and int(players_state[player_id].get("encounter_trigger_count", 0)) < GameRules.ENCOUNTER_MAX_TRIGGERS:
+		return roundi(float(price) * 0.5)
+	if encounter_type == GameRules.ENCOUNTER_DEBT_COLLECTOR:
+		return roundi(float(price) * 2.0)
+	return price
 
 func _broadcast_property_effect(cell_index: int, effect_type: String) -> void:
 	if multiplayer.has_multiplayer_peer():
@@ -1122,7 +1353,10 @@ func _finish_player_action(player_id: int) -> void:
 	state["toll_free_this_action"] = false
 	state["action_state"] = GameRules.ACTION_IDLE
 	players_state[player_id] = state
+	if _encounter_type(player_id) != GameRules.ENCOUNTER_NONE and int(players_state[player_id].get("encounter_remaining_steps", 0)) <= 0:
+		_expire_encounter(player_id, "累计移动 15 格")
 	_broadcast_state()
+	_save_game()
 	action_finished.emit(player_id)
 
 func _is_bankrupt(player_id: int) -> bool:
@@ -1352,7 +1586,7 @@ func _save_game() -> bool:
 		saved_state["action_state"] = GameRules.ACTION_IDLE
 		saved_state["toll_free_this_action"] = false
 		saved_players[player_id] = saved_state
-	var payload := {"save_version": GameRules.SAVE_VERSION, "players_state": saved_players, "properties": properties, "notifications": notifications, "notification_sequence": notification_sequence, "next_event_id": next_event_id}
+	var payload := {"save_version": GameRules.SAVE_VERSION, "players_state": saved_players, "properties": properties, "notifications": notifications, "notification_sequence": notification_sequence, "next_event_id": next_event_id, "room_wordbook": room_wordbook, "room_wordbook_name": room_wordbook_name, "room_wordbook_id": room_wordbook_id}
 	var file := FileAccess.open(save_temp_path, FileAccess.WRITE)
 	if file == null: return false
 	file.store_string(JSON.stringify(payload))
@@ -1379,7 +1613,7 @@ func _load_game() -> bool:
 		save_load_failed = true
 		return false
 	var parsed = parser.data
-	if not parsed is Dictionary or int(parsed.get("save_version", -1)) not in [1, GameRules.SAVE_VERSION]:
+	if not parsed is Dictionary or int(parsed.get("save_version", -1)) not in [1, 2, GameRules.SAVE_VERSION]:
 		save_load_failed = true
 		return false
 	var loaded := _migrate_and_apply_save(parsed)
@@ -1387,7 +1621,7 @@ func _load_game() -> bool:
 	return loaded
 
 func _migrate_and_apply_save(data: Dictionary) -> bool:
-	if int(data.get("save_version", -1)) not in [1, GameRules.SAVE_VERSION]: return false
+	if int(data.get("save_version", -1)) not in [1, 2, GameRules.SAVE_VERSION]: return false
 	if not data.get("players_state", null) is Dictionary or not data.get("properties", null) is Array or not data.get("notifications", null) is Array: return false
 	var loaded_players: Dictionary = data["players_state"]
 	for player_id in range(1, 7):
@@ -1413,6 +1647,11 @@ func _migrate_and_apply_save(data: Dictionary) -> bool:
 	notifications = data.get("notifications", []).duplicate(true)
 	notification_sequence = int(data.get("notification_sequence", 1))
 	next_event_id = int(data.get("next_event_id", 1))
+	var loaded_wordbook = data.get("room_wordbook", QuestionBank.default_entries())
+	if loaded_wordbook is Array and not loaded_wordbook.is_empty():
+		room_wordbook = loaded_wordbook.duplicate(true)
+		room_wordbook_name = String(data.get("room_wordbook_name", "内置基础词书"))
+		room_wordbook_id = String(data.get("room_wordbook_id", "builtin-default"))
 	board.set_property_states(properties)
 	for player_id in player_nodes:
 		_player_node(player_id).place_at_cell(int(players_state[player_id]["cell"]), board)
@@ -1432,7 +1671,7 @@ func _broadcast_state() -> void:
 
 func _make_snapshot() -> Dictionary:
 	leaderboard_data = _calculate_leaderboard()
-	return {"players": players_state.duplicate(true), "active_player_ids": active_player_ids.duplicate(), "properties": properties.duplicate(true), "last_rolls": last_rolls.duplicate(true), "last_event": last_event.duplicate(true), "last_wheel_result": last_wheel_result, "notifications": notifications.duplicate(true), "leaderboard": leaderboard_data.duplicate(true), "server_time": _server_time()}
+	return {"players": players_state.duplicate(true), "active_player_ids": active_player_ids.duplicate(), "properties": properties.duplicate(true), "last_rolls": last_rolls.duplicate(true), "last_event": last_event.duplicate(true), "last_wheel_result": last_wheel_result, "notifications": notifications.duplicate(true), "leaderboard": leaderboard_data.duplicate(true), "server_time": _server_time(), "room_wordbook": room_wordbook.duplicate(true), "room_wordbook_name": room_wordbook_name, "room_wordbook_id": room_wordbook_id}
 
 func _apply_snapshot(snapshot: Dictionary) -> void:
 	players_state = snapshot["players"].duplicate(true)
@@ -1443,6 +1682,9 @@ func _apply_snapshot(snapshot: Dictionary) -> void:
 	last_wheel_result = int(snapshot.get("last_wheel_result", 0))
 	notifications = snapshot.get("notifications", []).duplicate(true)
 	leaderboard_data = snapshot.get("leaderboard", []).duplicate(true)
+	room_wordbook = snapshot.get("room_wordbook", QuestionBank.default_entries()).duplicate(true)
+	room_wordbook_name = String(snapshot.get("room_wordbook_name", "内置基础词书"))
+	room_wordbook_id = String(snapshot.get("room_wordbook_id", "builtin-default"))
 	game_is_started = true
 	_show_world()
 	board.set_property_states(properties)
@@ -1453,6 +1695,7 @@ func _apply_snapshot(snapshot: Dictionary) -> void:
 		if not player.is_moving and String(players_state[player_id].get("action_state", GameRules.ACTION_IDLE)) == GameRules.ACTION_IDLE:
 			player.place_at_cell(int(players_state[player_id]["cell"]), board)
 	_refresh_ui()
+	game_ui.set_host_controls(is_host, room_wordbook_name, room_wordbook.size())
 	if local_player_id > 0 and game_ui.active_modal == game_ui.asset_overlay:
 		_show_asset_management()
 	state_applied.emit()

@@ -21,6 +21,9 @@ signal leaderboard_requested
 signal repay_tax_requested
 signal asset_management_requested
 signal asset_action_requested(cell_index: int, action_type: String)
+signal wordbook_file_selected(path: String)
+signal wordbook_import_confirmed
+signal wordbook_import_cancelled
 
 @onready var startup_overlay: Control = $StartupOverlay
 @onready var lobby_status_label: Label = $StartupOverlay/Center/Panel/Content/LobbyStatus
@@ -89,6 +92,12 @@ var asset_management_button: Button
 var asset_overlay: PanelContainer
 var asset_list: VBoxContainer
 var selected_player_targets: Array[int] = []
+var encounter_label: Label
+var wordbook_button: Button
+var wordbook_status_label: Label
+var wordbook_dialog: FileDialog
+var wordbook_preview_overlay: PanelContainer
+var wordbook_preview_label: Label
 
 func _ready() -> void:
 	_build_card_and_toast_ui()
@@ -138,6 +147,13 @@ func update_game_state(local_player_id: int, players: Dictionary, _active_player
 	tax_debt_label.visible = tax_debt > 0
 	repay_tax_button.visible = tax_debt > 0
 	asset_management_button.visible = tax_debt > 0
+	var encounter_type := String(own_state.get("encounter_type", GameRules.ENCOUNTER_NONE))
+	if encounter_type.is_empty():
+		encounter_label.text = "当前奇遇：无"
+	else:
+		encounter_label.text = "当前奇遇：%s  剩余 %d 格" % [GameRules.encounter_name(encounter_type), int(own_state.get("encounter_remaining_steps", 0))]
+		if encounter_type in [GameRules.ENCOUNTER_PROPERTY_GUEST, GameRules.ENCOUNTER_LUCKY_STAR]:
+			encounter_label.text += "  剩余触发 %d 次" % maxi(0, GameRules.ENCOUNTER_MAX_TRIGGERS - int(own_state.get("encounter_trigger_count", 0)))
 	all_players_label.visible = false
 	_latest_inventory = own_state.get("inventory", {}).duplicate(true)
 	cell_label.text = "当前位置：%d" % int(own_state.get("cell", 0))
@@ -339,10 +355,12 @@ func _build_card_and_toast_ui() -> void:
 	bankruptcy_label = Label.new(); bankruptcy_label.position = Vector2(32, 492); bankruptcy_label.size = Vector2(360, 44); bankruptcy_label.add_theme_font_size_override("font_size", 22); hud.add_child(bankruptcy_label)
 	leaderboard_button = Button.new(); leaderboard_button.text = "排行榜"; leaderboard_button.position = Vector2(32, 548); leaderboard_button.size = Vector2(180, 58); leaderboard_button.pressed.connect(func() -> void: leaderboard_requested.emit()); hud.add_child(leaderboard_button)
 	estimated_tax_label = Label.new(); estimated_tax_label.add_theme_font_size_override("font_size", 22); $HUD/InfoPanel/Labels.add_child(estimated_tax_label)
+	encounter_label = Label.new(); encounter_label.add_theme_font_size_override("font_size", 21); $HUD/InfoPanel/Labels.add_child(encounter_label)
 	tax_debt_label = Label.new(); tax_debt_label.position = Vector2(32, 618); tax_debt_label.size = Vector2(360, 40); tax_debt_label.add_theme_font_size_override("font_size", 25); tax_debt_label.add_theme_color_override("font_color", Color("a84022")); hud.add_child(tax_debt_label)
 	repay_tax_button = Button.new(); repay_tax_button.text = "立即还税"; repay_tax_button.position = Vector2(32, 666); repay_tax_button.size = Vector2(180, 58); repay_tax_button.pressed.connect(func() -> void: repay_tax_requested.emit()); hud.add_child(repay_tax_button)
 	asset_management_button = Button.new(); asset_management_button.text = "处理资产"; asset_management_button.position = Vector2(224, 666); asset_management_button.size = Vector2(180, 58); asset_management_button.pressed.connect(func() -> void: asset_management_requested.emit()); hud.add_child(asset_management_button)
 	_build_asset_ui()
+	_build_wordbook_ui()
 	toast_container = VBoxContainer.new()
 	toast_container.set_anchors_preset(Control.PRESET_CENTER_TOP)
 	toast_container.offset_left = -350; toast_container.offset_top = 40; toast_container.offset_right = 350; toast_container.offset_bottom = 220
@@ -398,6 +416,7 @@ func _build_card_and_toast_ui() -> void:
 	_add_close_button(selection_overlay, "selection", func() -> void: target_selection_cancelled.emit(), true)
 	_add_close_button(quiz_overlay, "quiz", Callable(), false)
 	_add_close_button(asset_overlay, "asset", func() -> void: _close_modal(asset_overlay), true)
+	_add_close_button(wordbook_preview_overlay, "wordbook", _cancel_wordbook_preview, true)
 
 func _update_bankruptcy_text() -> void:
 	if bankruptcy_label == null: return
@@ -438,6 +457,38 @@ func show_asset_management(owned_properties: Array) -> void:
 		var sell := Button.new(); sell.text = "卖给系统"; sell.pressed.connect(func() -> void: asset_action_requested.emit(cell_index, "sell")); row.add_child(sell)
 		asset_list.add_child(row)
 	_open_modal(asset_overlay)
+
+func _build_wordbook_ui() -> void:
+	wordbook_button = Button.new(); wordbook_button.text = "导入词书"; wordbook_button.set_anchors_preset(Control.PRESET_TOP_RIGHT); wordbook_button.offset_left = -190; wordbook_button.offset_top = 108; wordbook_button.offset_right = -32; wordbook_button.offset_bottom = 168; wordbook_button.pressed.connect(func() -> void: wordbook_dialog.popup_centered_ratio(0.72)); hud.add_child(wordbook_button)
+	wordbook_status_label = Label.new(); wordbook_status_label.set_anchors_preset(Control.PRESET_TOP_RIGHT); wordbook_status_label.offset_left = -430; wordbook_status_label.offset_top = 176; wordbook_status_label.offset_right = -32; wordbook_status_label.offset_bottom = 220; wordbook_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT; wordbook_status_label.add_theme_font_size_override("font_size", 20); hud.add_child(wordbook_status_label)
+	wordbook_dialog = FileDialog.new(); wordbook_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE; wordbook_dialog.access = FileDialog.ACCESS_FILESYSTEM; wordbook_dialog.filters = PackedStringArray(["*.csv ; CSV 词书", "*.txt ; TXT 词书"]); wordbook_dialog.file_selected.connect(func(path: String) -> void: wordbook_file_selected.emit(path)); add_child(wordbook_dialog)
+	wordbook_preview_overlay = PanelContainer.new(); wordbook_preview_overlay.set_anchors_preset(Control.PRESET_CENTER); wordbook_preview_overlay.offset_left = -450; wordbook_preview_overlay.offset_top = -330; wordbook_preview_overlay.offset_right = 450; wordbook_preview_overlay.offset_bottom = 330
+	var content := VBoxContainer.new(); wordbook_preview_overlay.add_child(content)
+	var title := Label.new(); title.text = "词书导入预览"; title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; title.add_theme_font_size_override("font_size", 34); content.add_child(title)
+	wordbook_preview_label = Label.new(); wordbook_preview_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART; wordbook_preview_label.size_flags_vertical = Control.SIZE_EXPAND_FILL; wordbook_preview_label.add_theme_font_size_override("font_size", 23); content.add_child(wordbook_preview_label)
+	var actions := HBoxContainer.new(); actions.alignment = BoxContainer.ALIGNMENT_CENTER; content.add_child(actions)
+	var confirm := Button.new(); confirm.text = "确认使用"; confirm.pressed.connect(func() -> void: wordbook_import_confirmed.emit()); actions.add_child(confirm)
+	var cancel := Button.new(); cancel.text = "取消"; cancel.pressed.connect(_cancel_wordbook_preview); actions.add_child(cancel)
+	wordbook_preview_overlay.visible = false; add_child(wordbook_preview_overlay)
+
+func set_host_controls(host_controls: bool, book_name: String, entry_count: int) -> void:
+	if wordbook_button == null: return
+	wordbook_button.visible = host_controls
+	if not host_controls and wordbook_dialog.visible: wordbook_dialog.hide()
+	wordbook_status_label.text = "房间词书：%s（%d）" % [book_name, entry_count]
+
+func show_wordbook_preview(book_name: String, parsed: Dictionary) -> void:
+	var preview_lines: Array[String] = []
+	for entry in parsed.get("preview", []): preview_lines.append("%s — %s" % [String(entry.get("word", "")), String(entry.get("meaning", ""))])
+	wordbook_preview_label.text = "%s\n成功：%d    失败：%d\n\n%s" % [book_name, int(parsed.get("success_count", 0)), int(parsed.get("failed_count", 0)), "\n".join(preview_lines)]
+	_open_modal(wordbook_preview_overlay)
+
+func hide_wordbook_preview() -> void:
+	_close_modal(wordbook_preview_overlay)
+
+func _cancel_wordbook_preview() -> void:
+	_close_modal(wordbook_preview_overlay)
+	wordbook_import_cancelled.emit()
 
 func _build_leaderboard_ui() -> void:
 	leaderboard_overlay = PanelContainer.new(); leaderboard_overlay.set_anchors_preset(Control.PRESET_CENTER_RIGHT); leaderboard_overlay.offset_left = -520; leaderboard_overlay.offset_top = -360; leaderboard_overlay.offset_right = -30; leaderboard_overlay.offset_bottom = 360
@@ -579,7 +630,7 @@ func _update_mailbox(notifications: Array) -> void:
 	for event in notifications:
 		var label := Label.new()
 		label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		var prefixes := {"daily_tax": "【税收】", "bankrupt": "【破产】", "bankruptcy_relief": "【破产】", "protection_ended": "【破产】", "quiz": "【答题】", "property": "【房产】", "toll": "【房产】", "card": "【卡牌】"}
+		var prefixes := {"daily_tax": "【税收】", "bankrupt": "【破产】", "bankruptcy_relief": "【破产】", "protection_ended": "【破产】", "quiz": "【答题】", "property": "【房产】", "toll": "【房产】", "card": "【卡牌】", "encounter": "【奇遇】", "wordbook": "【词书】"}
 		label.text = "%s %s  %s" % [String(prefixes.get(String(event.get("event_type", "")), "【通知】")), String(event.get("time", "")), String(event.get("message", ""))]
 		mailbox_list.add_child(label)
 
@@ -640,7 +691,7 @@ func _hide_modal_visual(target: Control) -> void:
 	else: target.visible = false
 
 func _close_all_modals() -> void:
-	for target in [property_overlay, wheel_overlay, card_overlay, mailbox_overlay, leaderboard_overlay, selection_overlay, quiz_overlay, asset_overlay]:
+	for target in [property_overlay, wheel_overlay, card_overlay, mailbox_overlay, leaderboard_overlay, selection_overlay, quiz_overlay, asset_overlay, wordbook_preview_overlay]:
 		if target != null: _hide_modal_visual(target)
 	active_modal = null
 	force_buy_button.visible = false
@@ -680,7 +731,7 @@ func _apply_warm_theme() -> void:
 	warm_theme.set_stylebox("normal", "LineEdit", input_style); warm_theme.set_stylebox("focus", "LineEdit", input_style)
 	warm_theme.set_color("font_color", "Label", Color("4b2d18")); warm_theme.set_color("font_color", "Button", Color("4b2d18")); warm_theme.set_color("font_disabled_color", "Button", Color("75634c"))
 	warm_theme.set_color("font_color", "LineEdit", Color("4b2d18"))
-	for root_control in [startup_overlay, hud, property_overlay, wheel_overlay, card_overlay, mailbox_overlay, leaderboard_overlay, selection_overlay, quiz_overlay, asset_overlay]:
+	for root_control in [startup_overlay, hud, property_overlay, wheel_overlay, card_overlay, mailbox_overlay, leaderboard_overlay, selection_overlay, quiz_overlay, asset_overlay, wordbook_preview_overlay]:
 		root_control.theme = warm_theme
 		_remove_cold_overrides(root_control)
 	$StartupOverlay/Backdrop.color = Color("f2d99d")

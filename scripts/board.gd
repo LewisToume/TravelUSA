@@ -28,6 +28,7 @@ const WHEEL_COLOR := Color("c39be8")
 const SHOP_COLOR := Color("f3a75f")
 const START_COLOR := Color("83d59e")
 const QUIZ_COLOR := Color("78d4c5")
+const ENCOUNTER_COLOR := Color("ef8f71")
 const CELL_BORDER_COLOR := Color("684223")
 
 
@@ -169,6 +170,8 @@ func _draw() -> void:
 			fill_color = SHOP_COLOR
 		elif cell_type == GameRules.CELL_QUIZ:
 			fill_color = QUIZ_COLOR
+		elif cell_type == GameRules.CELL_ENCOUNTER:
+			fill_color = ENCOUNTER_COLOR
 		var depth := Vector2(11.0, 14.0)
 		draw_rect(Rect2(rect.position + depth + Vector2(3, 4), rect.size), Color(0.35, 0.22, 0.10, 0.22), true)
 		draw_colored_polygon(PackedVector2Array([rect.end - Vector2(rect.size.x, 0), rect.end, rect.end + depth, rect.end - Vector2(rect.size.x, 0) + depth]), fill_color.darkened(0.28))
@@ -187,6 +190,8 @@ func _draw() -> void:
 			center_text = "商店"
 		elif cell_type == GameRules.CELL_QUIZ:
 			center_text = "答题"
+		elif cell_type == GameRules.CELL_ENCOUNTER:
+			center_text = "奇遇"
 		if not center_text.is_empty():
 			var text_size := font.get_string_size(center_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size)
 			var baseline := center + Vector2(-text_size.x * 0.5, text_size.y * 0.32)

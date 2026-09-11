@@ -15,12 +15,13 @@ const BANKRUPTCY_PROTECTION_SECONDS := 5 * 60 * 60
 const DAILY_TAX_RATE := 0.10
 const DAILY_TAX_HOUR := 20
 const DAILY_TAX_MINUTE := 0
-const SAVE_VERSION := 2
+const SAVE_VERSION := 3
 const MAX_STAMINA := 20
 const STAMINA_RECOVERY_PER_HOUR := 5
 const STAMINA_RECOVERY_SECONDS := 60 * 60
-const QUIZ_QUESTION_COUNT := 5
-const QUIZ_REWARD_PER_CORRECT := 40
+const QUIZ_QUESTION_COUNT := 10
+const QUIZ_REWARD_PER_CORRECT := 20
+const RECENT_QUESTION_LIMIT := 100
 const MAX_PROPERTY_LEVEL := 5
 const MAX_CAPTURABLE_PROPERTY_LEVEL := 3
 const CAPTURE_PRICE_MULTIPLIER := 1.2
@@ -35,6 +36,18 @@ const CELL_REWARD := "REWARD"
 const CELL_WHEEL := "WHEEL"
 const CELL_SHOP := "SHOP"
 const CELL_QUIZ := "QUIZ"
+const CELL_ENCOUNTER := "ENCOUNTER"
+
+const ENCOUNTER_NONE := ""
+const ENCOUNTER_PROPERTY_GUEST := "PROPERTY_GUEST"
+const ENCOUNTER_LUCKY_STAR := "LUCKY_STAR"
+const ENCOUNTER_WEALTH_GOD := "WEALTH_GOD"
+const ENCOUNTER_BROOM_STAR := "BROOM_STAR"
+const ENCOUNTER_DEBT_COLLECTOR := "DEBT_COLLECTOR"
+const ENCOUNTER_TYPES := [ENCOUNTER_PROPERTY_GUEST, ENCOUNTER_LUCKY_STAR, ENCOUNTER_WEALTH_GOD, ENCOUNTER_BROOM_STAR, ENCOUNTER_DEBT_COLLECTOR]
+const ENCOUNTER_NAMES := {ENCOUNTER_PROPERTY_GUEST: "地产客", ENCOUNTER_LUCKY_STAR: "幸运星", ENCOUNTER_WEALTH_GOD: "财神", ENCOUNTER_BROOM_STAR: "扫把星", ENCOUNTER_DEBT_COLLECTOR: "讨债人"}
+const ENCOUNTER_DURATION_STEPS := 15
+const ENCOUNTER_MAX_TRIGGERS := 2
 
 const CARD_REMOTE_DICE := "remote_dice"
 const CARD_BUILD := "build_card"
@@ -69,19 +82,19 @@ const WHEEL_FULL_SPINS := 6.0
 const MAP_CELL_TYPES := [
 	CELL_START,     # 0
 	CELL_PROPERTY, CELL_PROPERTY, CELL_PROPERTY, CELL_QUIZ,
-	CELL_QUIZ,      # 5
+	CELL_ENCOUNTER, # 5
 	CELL_QUIZ, CELL_PROPERTY, CELL_PROPERTY,
 	CELL_WHEEL,     # 9
 	CELL_PROPERTY, CELL_QUIZ,
-	CELL_QUIZ,      # 12
+	CELL_ENCOUNTER, # 12
 	CELL_QUIZ, CELL_PROPERTY,
 	CELL_SHOP,      # 15
 	CELL_QUIZ, CELL_PROPERTY, CELL_QUIZ,
-	CELL_QUIZ,      # 19
+	CELL_ENCOUNTER, # 19
 	CELL_QUIZ, CELL_PROPERTY,
 	CELL_WHEEL,     # 22
 	CELL_PROPERTY, CELL_QUIZ, CELL_PROPERTY,
-	CELL_QUIZ,      # 26
+	CELL_ENCOUNTER, # 26
 	CELL_QUIZ,
 	CELL_SHOP,      # 28
 	CELL_PROPERTY,  # 29
@@ -111,6 +124,11 @@ static func build_player_state(player_id: int) -> Dictionary:
 		"last_tax_date": "",
 		"tax_debt": 0,
 		"last_stamina_recovery_time": int(Time.get_unix_time_from_system()),
+		"recent_question_words": [],
+		"encounter_type": ENCOUNTER_NONE,
+		"encounter_remaining_steps": 0,
+		"encounter_trigger_count": 0,
+		"encounter_start_date": "",
 	}
 
 static func build_initial_inventory() -> Dictionary:
@@ -181,6 +199,9 @@ static func hotel_landing_stamina_cost(property_level: int) -> int:
 
 static func can_force_buy(property_type: String, property_level: int) -> bool:
 	return property_type == PROPERTY_HOUSE and property_level >= 1 and property_level <= MAX_CAPTURABLE_PROPERTY_LEVEL
+
+static func encounter_name(encounter_type: String) -> String:
+	return String(ENCOUNTER_NAMES.get(encounter_type, "无"))
 
 static func is_wheel_result_valid(result: int) -> bool:
 	return result in WHEEL_RESULTS

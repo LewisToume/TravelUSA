@@ -16,8 +16,8 @@ func _run() -> void:
 	await process_frame; await process_frame
 	game.test_mode = true; game.test_wheel_result_override = 200; game.test_wheel_spin_duration = 0.01; game.is_host = true; game.local_player_id = 1; game.game_is_started = false; game.active_player_ids.assign([1, 2, 3, 4])
 	game.save_path = SAVE; game.save_temp_path = TEMP
-	check(GameRules.MAP_CELL_TYPES.count(GameRules.CELL_REWARD) == 0 and GameRules.MAP_CELL_TYPES.count(GameRules.CELL_QUIZ) == 13, "奖励格已全部替换为答题测试格")
-	check(QuestionBank.QUESTIONS.size() >= 5 and int(QuestionBank.QUESTIONS[0]["correct"]) == 0, "QuestionBank 独立且 A 为正确答案")
+	check(GameRules.MAP_CELL_TYPES.count(GameRules.CELL_REWARD) == 0 and GameRules.MAP_CELL_TYPES.count(GameRules.CELL_QUIZ) == 9 and GameRules.MAP_CELL_TYPES.count(GameRules.CELL_ENCOUNTER) == 4, "地图包含 9 个答题格和 4 个奇遇格")
+	check(QuestionBank.DEFAULT_ENTRIES.size() >= GameRules.QUIZ_QUESTION_COUNT, "QuestionBank 独立并提供足够词条")
 
 	_set_property(1, 2, 3)
 	var p1: Dictionary = game.players_state[1]; p1["coins"] = 40; game.players_state[1] = p1
@@ -51,9 +51,9 @@ func _run() -> void:
 	check(String(game.players_state[1]["bankruptcy_state"]) == GameRules.BANKRUPTCY_NORMAL, "5 小时后自动恢复 NORMAL")
 	game.server_time_override = bankrupt_day + 2 * 86400
 
-	await _run_quiz(3, 0)
-	check(int(game.players_state[3]["coins"]) == 1200 and int(game.players_state[3]["daily_taxable_income"]) == 200, "五题全选 A 共奖励 200 且全部计税")
-	await _run_quiz(4, 1)
+	await _run_quiz(3, true)
+	check(int(game.players_state[3]["coins"]) == 1200 and int(game.players_state[3]["daily_taxable_income"]) == 200, "十题全答对共奖励 200 且全部计税")
+	await _run_quiz(4, false)
 	check(int(game.players_state[4]["coins"]) == 1000 and int(game.players_state[4]["daily_taxable_income"]) == 0, "B/C/D 错误不奖励金币")
 	var reward_income := int(game.players_state[3]["daily_taxable_income"])
 	game._resolve_reward(3, 5)
@@ -187,13 +187,14 @@ func _run() -> void:
 	if failures.is_empty(): print("ECONOMY RESULT | PASS | 破产、保护、答题、税收、排行和持久化通过"); quit(0)
 	else: print("ECONOMY RESULT | FAIL | ", failures); quit(1)
 
-func _run_quiz(player_id: int, answer: int) -> void:
+func _run_quiz(player_id: int, answer_correctly: bool) -> void:
 	var state: Dictionary = game.players_state[player_id]; state["action_state"] = GameRules.ACTION_RESOLVING; game.players_state[player_id] = state
 	game._resolve_quiz(player_id, 4)
-	for question_number in range(1, 6):
+	for question_number in range(1, GameRules.QUIZ_QUESTION_COUNT + 1):
 		await _wait(func(): return game.pending_actions.has(player_id) and int(game.pending_actions[player_id].get("question_number", 0)) == question_number)
-		var event_id := int(game.pending_actions[player_id]["event_id"])
-		game._host_record_response(player_id, event_id, "quiz_answer", false, answer)
+		var pending: Dictionary = game.pending_actions[player_id]
+		var answer := int(pending["correct"]) if answer_correctly else (int(pending["correct"]) + 1) % 4
+		game._host_record_response(player_id, int(pending["event_id"]), "quiz_answer", false, answer)
 	await _wait(func(): return not game.pending_actions.has(player_id))
 
 func _set_property(index: int, owner: int, level: int) -> void:

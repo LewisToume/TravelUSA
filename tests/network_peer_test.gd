@@ -22,6 +22,12 @@ func _run() -> void:
 
 func _host_flow() -> void:
 	if not game.host_game(port) or not await _wait(func(): return game.active_player_ids.size() == 4, 8.0): await _finish(false, "three_clients_not_connected"); return
+	var import_csv := "word,meaning\n"
+	for entry in QuestionBank.DEFAULT_ENTRIES: import_csv += "%s,%s\n" % [entry["word"], entry["meaning"]]
+	game._prepare_wordbook_import("network-room.csv", import_csv, "csv"); game._confirm_wordbook_import()
+	var p4: Dictionary = game.players_state[4]
+	p4["encounter_type"] = GameRules.ENCOUNTER_PROPERTY_GUEST; p4["encounter_remaining_steps"] = GameRules.ENCOUNTER_DURATION_STEPS; p4["encounter_start_date"] = game._server_date(); game.players_state[4] = p4
+	game._broadcast_state()
 	game.request_test_roll(9)
 	if not await _wait_action(1, "wheel"): await _finish(false, "p1_wheel_missing"); return
 	if not await _wait(func(): return String(game.players_state[1]["action_state"]) == GameRules.ACTION_RESOLVING and int(game.players_state[2]["stamina"]) == 19 and int(game.players_state[3]["stamina"]) == 19 and int(game.players_state[4]["stamina"]) == 19, 5.0): await _finish(false, "clients_blocked_by_p1_wheel"); return
@@ -63,7 +69,7 @@ func _all_idle() -> bool:
 	return true
 
 func _valid_shared_state() -> bool:
-	return game.active_player_ids.size() == 4 and int(game.players_state[1]["cell"]) == 9 and int(game.players_state[2]["cell"]) == 9 and int(game.players_state[3]["cell"]) == 2 and int(game.players_state[4]["cell"]) == 3 and int(game.players_state[1]["stamina"]) == 19 and int(game.players_state[2]["stamina"]) == 19 and int(game.players_state[3]["stamina"]) == 19 and int(game.players_state[4]["stamina"]) == 19 and int(game.players_state[1]["coins"]) == 1200 and int(game.players_state[2]["coins"]) == 1200 and game.players_state[1].has("tax_debt") and game.players_state[1].has("last_stamina_recovery_time") and String(game.properties[8].get("property_type", "")) == GameRules.PROPERTY_HOTEL
+	return game.active_player_ids.size() == 4 and int(game.players_state[1]["cell"]) == 9 and int(game.players_state[2]["cell"]) == 9 and int(game.players_state[3]["cell"]) == 2 and int(game.players_state[4]["cell"]) == 3 and int(game.players_state[1]["stamina"]) == 19 and int(game.players_state[2]["stamina"]) == 19 and int(game.players_state[3]["stamina"]) == 19 and int(game.players_state[4]["stamina"]) == 19 and int(game.players_state[1]["coins"]) == 1200 and int(game.players_state[2]["coins"]) == 1200 and game.players_state[1].has("tax_debt") and game.players_state[1].has("last_stamina_recovery_time") and String(game.properties[8].get("property_type", "")) == GameRules.PROPERTY_HOTEL and game.room_wordbook_name == "network-room.csv" and game.room_wordbook.size() == QuestionBank.DEFAULT_ENTRIES.size() and String(game.players_state[4].get("encounter_type", "")) == GameRules.ENCOUNTER_PROPERTY_GUEST and int(game.players_state[4].get("encounter_remaining_steps", -1)) == 12
 
 func _wait_action(player_id: int, kind: String, seconds := 5.0) -> bool:
 	return await _wait(func(): return game.pending_actions.has(player_id) and String(game.pending_actions[player_id].get("type", "")) == kind, seconds)

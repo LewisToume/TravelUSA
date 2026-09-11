@@ -40,7 +40,7 @@ func _run() -> void:
 	check(not game.game_ui.card_overlay.visible and game.game_ui.leaderboard_overlay.visible, "打开新主窗口会关闭旧主窗口")
 	game.game_ui.modal_close_buttons["leaderboard"].pressed.emit()
 	check(game.game_ui.active_modal == null and not game.game_ui.modal_shade.visible, "点击 X 后解除模态遮罩")
-	check(game.game_ui.modal_close_buttons.size() == 8 and game.game_ui.modal_close_buttons["property"].disabled and game.game_ui.modal_close_buttons["wheel"].disabled and game.game_ui.modal_close_buttons["quiz"].disabled, "全部主窗口有大号 X 且强制流程不可绕过")
+	check(game.game_ui.modal_close_buttons.size() == 9 and game.game_ui.modal_close_buttons["property"].disabled and game.game_ui.modal_close_buttons["wheel"].disabled and game.game_ui.modal_close_buttons["quiz"].disabled, "全部主窗口有大号 X 且强制流程不可绕过")
 	var warm_panel := game.game_ui.card_overlay.get_theme_stylebox("panel") as StyleBoxFlat
 	check(warm_panel != null and warm_panel.bg_color.a == 1.0 and warm_panel.bg_color.r > warm_panel.bg_color.b and warm_panel.border_width_left >= 3, "主窗口使用不透明暖色背景和棕色边框")
 	check(BoardPath.PSEUDO_3D_ENABLED and BoardPlayer.PSEUDO_3D_ENABLED and BoardPath.BACKGROUND_COLOR.r > BoardPath.BACKGROUND_COLOR.b, "地图、角色与房产启用明亮暖色伪 3D 表现")
