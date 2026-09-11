@@ -433,6 +433,10 @@ func _play_property_effect_remote(cell_index: int, effect_type: String) -> void:
 func _show_money_popup_remote(player_id: int, amount: int) -> void:
 	_player_node(player_id).show_money_popup(amount)
 
+@rpc("authority", "call_remote", "reliable")
+func _play_bankruptcy_effect_remote(player_id: int) -> void:
+	if local_player_id == player_id: _player_node(player_id).play_bankruptcy_effect()
+
 @rpc("authority", "call_local", "reliable")
 func _hide_prompt_remote(event_id: int) -> void:
 	if int(pending_action.get("event_id", -1)) == event_id:
@@ -736,7 +740,9 @@ func _host_buy_card(player_id: int, card_id: String) -> bool:
 		return false
 	var price := GameRules.card_price(card_id)
 	var state: Dictionary = players_state[player_id]
-	if int(state["coins"]) < price:
+	if int(state["coins"]) <= price:
+		_send_private_toast(player_id, "金币不足")
+		_send_shop(player_id, pending_actions[player_id])
 		return false
 	var inventory: Dictionary = state["inventory"]
 	state["coins"] = int(state["coins"]) - price
@@ -1026,6 +1032,9 @@ func _declare_bankruptcy(player_id: int, _reason: String = "") -> void:
 	state["action_state"] = GameRules.ACTION_IDLE
 	state["toll_free_this_action"] = false
 	players_state[player_id] = state
+	var peer_id := int(player_peer_ids.get(player_id, 1))
+	if peer_id == 1: _play_bankruptcy_effect_remote(player_id)
+	else: _play_bankruptcy_effect_remote.rpc_id(peer_id, player_id)
 	_notify("bankrupt", player_id, -1, int(state["cell"]), 0, "Player %d 已破产" % player_id)
 	_save_game()
 
@@ -1074,6 +1083,7 @@ func _check_player_tax(player_id: int) -> bool:
 	state["last_tax_date"] = _server_date()
 	players_state[player_id] = state
 	_notify("daily_tax", player_id, -1, int(state["cell"]), -actual_tax, "每日税收结算：Player %d 今日收入 %d，缴税 %d" % [player_id, income, actual_tax])
+	_send_private_toast(player_id, "【每日税收】\n今日可税收入：%d\n税率：10%%\n缴税：%d" % [income, actual_tax])
 	_broadcast_state()
 	_save_game()
 	return true
@@ -1203,6 +1213,7 @@ func _apply_snapshot(snapshot: Dictionary) -> void:
 	for player_id in player_nodes:
 		var player := _player_node(player_id)
 		player.visible = player_id in active_player_ids
+		player.set_bankruptcy_state(String(players_state[player_id].get("bankruptcy_state", GameRules.BANKRUPTCY_NORMAL)) == GameRules.BANKRUPTCY_BANKRUPT)
 		if not player.is_moving and String(players_state[player_id].get("action_state", GameRules.ACTION_IDLE)) == GameRules.ACTION_IDLE:
 			player.place_at_cell(int(players_state[player_id]["cell"]), board)
 	_refresh_ui()

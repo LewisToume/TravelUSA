@@ -4,12 +4,12 @@
 [ext_resource type="PackedScene" path="res://scenes/wheel_ui.tscn" id="2_wheel"]
 
 [sub_resource type="StyleBoxFlat" id="PanelStyle"]
-bg_color = Color(0.055, 0.086, 0.12, 0.96)
+bg_color = Color(0.969, 0.906, 0.741, 1)
 border_width_left = 3
 border_width_top = 3
 border_width_right = 3
 border_width_bottom = 3
-border_color = Color(0.2, 0.72, 0.88, 0.85)
+border_color = Color(0.545, 0.353, 0.169, 1)
 corner_radius_top_left = 18
 corner_radius_top_right = 18
 corner_radius_bottom_right = 18
@@ -38,7 +38,7 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-color = Color(0.035, 0.055, 0.075, 1)
+color = Color(0.949, 0.835, 0.608, 1)
 
 [node name="Center" type="CenterContainer" parent="StartupOverlay"]
 layout_mode = 1
@@ -94,7 +94,7 @@ text = "Join Game"
 
 [node name="LobbyStatus" type="Label" parent="StartupOverlay/Center/Panel/Content"]
 layout_mode = 2
-theme_override_colors/font_color = Color(1, 0.8, 0.3, 1)
+theme_override_colors/font_color = Color(0.38, 0.22, 0.1, 1)
 theme_override_font_sizes/font_size = 25
 text = "请选择 Host 或 Join"
 horizontal_alignment = 1
@@ -127,13 +127,13 @@ text = "Player 1"
 
 [node name="CoinsLabel" type="Label" parent="HUD/InfoPanel/Labels"]
 layout_mode = 2
-theme_override_colors/font_color = Color(1, 0.82, 0.3, 1)
+theme_override_colors/font_color = Color(0.45, 0.27, 0.1, 1)
 theme_override_font_sizes/font_size = 28
 text = "自己的金币：0"
 
 [node name="StaminaLabel" type="Label" parent="HUD/InfoPanel/Labels"]
 layout_mode = 2
-theme_override_colors/font_color = Color(0.45, 1, 0.55, 1)
+theme_override_colors/font_color = Color(0.42, 0.31, 0.12, 1)
 theme_override_font_sizes/font_size = 28
 text = "自己的活力：20"
 
@@ -154,7 +154,7 @@ text = "骰子点数：—"
 
 [node name="ActionStatusLabel" type="Label" parent="HUD/InfoPanel/Labels"]
 layout_mode = 2
-theme_override_colors/font_color = Color(0.35, 0.86, 1, 1)
+theme_override_colors/font_color = Color(0.46, 0.28, 0.12, 1)
 theme_override_font_sizes/font_size = 25
 text = "状态：可行动"
 
@@ -188,7 +188,7 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-color = Color(0, 0, 0, 0.48)
+color = Color(0.25, 0.16, 0.08, 0.46)
 
 [node name="Center" type="CenterContainer" parent="PropertyOverlay"]
 layout_mode = 1

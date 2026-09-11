@@ -4,12 +4,12 @@ class_name WheelFace
 signal spin_finished
 
 const SECTOR_COLORS := [
-	Color("41b883"),
-	Color("4b9fe1"),
-	Color("7e6de0"),
-	Color("df6f9f"),
-	Color("e36b5d"),
-	Color("e2a84a"),
+	Color("d89b45"),
+	Color("efbd62"),
+	Color("d97955"),
+	Color("e59a72"),
+	Color("c96b4b"),
+	Color("b8874d"),
 ]
 
 var _spin_tween: Tween
@@ -61,7 +61,7 @@ func _draw() -> void:
 			var angle := start_angle + sector_angle * float(segment) / 12.0
 			points.append(center + Vector2(cos(angle), sin(angle)) * radius)
 		draw_colored_polygon(points, SECTOR_COLORS[index])
-		draw_line(center, center + Vector2(cos(start_angle), sin(start_angle)) * radius, Color("17242b"), 4.0, true)
+		draw_line(center, center + Vector2(cos(start_angle), sin(start_angle)) * radius, Color("684223"), 4.0, true)
 		var value := int(GameRules.WHEEL_RESULTS[index])
 		var label := "+%d" % value if value > 0 else str(value)
 		var font := ThemeDB.fallback_font
@@ -69,6 +69,6 @@ func _draw() -> void:
 		var text_size := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size)
 		var label_center := center + Vector2(cos(middle_angle), sin(middle_angle)) * radius * 0.65
 		draw_string(font, label_center + Vector2(-text_size.x * 0.5, text_size.y * 0.32), label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color.WHITE)
-	draw_arc(center, radius, 0.0, TAU, 96, Color("dcebf2"), 7.0, true)
-	draw_circle(center, radius * 0.16, Color("17242b"))
+	draw_arc(center, radius, 0.0, TAU, 96, Color("fff0c9"), 7.0, true)
+	draw_circle(center, radius * 0.16, Color("684223"))
 	draw_circle(center, radius * 0.09, Color("f2c94c"))

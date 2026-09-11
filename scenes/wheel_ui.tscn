@@ -5,12 +5,12 @@
 [ext_resource type="Script" path="res://scripts/wheel_pointer.gd" id="3_pointer"]
 
 [sub_resource type="StyleBoxFlat" id="PanelStyle"]
-bg_color = Color(0.04, 0.075, 0.105, 0.98)
+bg_color = Color(0.969, 0.906, 0.741, 1)
 border_width_left = 3
 border_width_top = 3
 border_width_right = 3
 border_width_bottom = 3
-border_color = Color(0.65, 0.46, 0.91, 1)
+border_color = Color(0.545, 0.353, 0.169, 1)
 corner_radius_top_left = 22
 corner_radius_top_right = 22
 corner_radius_bottom_right = 22
@@ -36,7 +36,7 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-color = Color(0, 0, 0, 0.62)
+color = Color(0.25, 0.16, 0.08, 0.46)
 
 [node name="Center" type="CenterContainer" parent="Shade"]
 layout_mode = 1

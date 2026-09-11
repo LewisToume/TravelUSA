@@ -1,5 +1,6 @@
 extends Node2D
 class_name BoardPlayer
+const PSEUDO_3D_ENABLED := true
 
 signal step_reached(cell_index: int)
 signal movement_finished(cell_index: int)
@@ -16,14 +17,26 @@ var _step_queue_processing: bool = false
 var _popup_text := ""
 var _popup_color := Color.WHITE
 var _popup_alpha := 0.0
+var is_bankrupt := false
+var _bankruptcy_effect_until := 0
 
 
 func _ready() -> void:
 	queue_redraw()
 
 func _process(_delta: float) -> void:
-	if _popup_alpha > 0.0:
+	if _popup_alpha > 0.0 or Time.get_ticks_msec() < _bankruptcy_effect_until:
 		queue_redraw()
+
+func set_bankruptcy_state(bankrupt: bool) -> void:
+	if is_bankrupt != bankrupt:
+		is_bankrupt = bankrupt
+		queue_redraw()
+
+func play_bankruptcy_effect() -> void:
+	is_bankrupt = true
+	_bankruptcy_effect_until = Time.get_ticks_msec() + 1800
+	queue_redraw()
 
 
 func place_at_cell(cell_index: int, board: BoardPath) -> void:
@@ -92,16 +105,34 @@ func show_money_popup(amount: int) -> void:
 
 
 func _draw() -> void:
-	draw_circle(Vector2(5.0, 8.0), 37.0, Color(0.0, 0.0, 0.0, 0.3))
-	draw_circle(Vector2.ZERO, 35.0, player_color)
-	draw_arc(Vector2.ZERO, 35.0, 0.0, TAU, 40, Color("17242b"), 5.0, true)
+	var effect_active := Time.get_ticks_msec() < _bankruptcy_effect_until
+	var shake := sin(float(Time.get_ticks_msec()) * 0.055) * 11.0 if effect_active else 0.0
+	draw_set_transform(Vector2(shake, 0))
+	var color := player_color
+	if is_bankrupt: color = color.lerp(Color("8f897d"), 0.82)
+	draw_set_transform(Vector2(7.0 + shake, 14.0), 0.0, Vector2(1.35, 0.48))
+	draw_circle(Vector2.ZERO, 38.0, Color(0.31, 0.20, 0.10, 0.28))
+	draw_set_transform(Vector2(shake, 0))
+	draw_colored_polygon(PackedVector2Array([Vector2(-29, -2), Vector2(29, -2), Vector2(23, 38), Vector2(-23, 38)]), color.darkened(0.22))
+	draw_circle(Vector2(0, 34), 24.0, color.darkened(0.28))
+	draw_circle(Vector2(0, -8), 34.0, color)
+	draw_circle(Vector2(-10, -18), 10.0, color.lightened(0.35))
+	draw_arc(Vector2(0, -8), 34.0, 0.0, TAU, 40, Color("684223"), 4.0, true)
 	var label := "P%d" % player_id
 	var font := ThemeDB.fallback_font
 	var size := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 22)
 	draw_string(font, Vector2(-size.x * 0.5, size.y * 0.32), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 22, Color.WHITE)
+	if effect_active:
+		var bankrupt_text := "破产"
+		var bankrupt_size := font.get_string_size(bankrupt_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 38)
+		draw_string(font, Vector2(-bankrupt_size.x * 0.5, -64), bankrupt_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 38, Color("a63d2f"))
+		for offset in [Vector2(-42, 54), Vector2(-12, 68), Vector2(28, 52)]:
+			draw_circle(offset, 8.0, Color("d7a62f"))
+			draw_line(offset - Vector2(6, 6), offset + Vector2(6, 6), Color("8b5a2b"), 3.0)
 	if _popup_alpha > 0.0:
 		var popup_size := font.get_string_size(_popup_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 25)
 		draw_string(font, Vector2(-popup_size.x * 0.5, -54), _popup_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 25, Color(_popup_color, _popup_alpha))
+	draw_set_transform(Vector2.ZERO)
 
 func _player_offset() -> Vector2:
 	return Vector2.RIGHT.rotated(float(player_id - 1) * TAU / 6.0) * 48.0

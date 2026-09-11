@@ -1,5 +1,6 @@
 extends Node2D
 class_name BoardPath
+const PSEUDO_3D_ENABLED := true
 
 signal target_cell_selected(cell_index: int)
 
@@ -16,18 +17,18 @@ var building_effects: Dictionary = {}
 var selectable_cells: Array[int] = []
 var selection_active := false
 
-const BACKGROUND_COLOR := Color("132331")
-const GRID_COLOR := Color(0.16, 0.25, 0.31, 0.5)
-const ROAD_COLOR := Color("304a58")
-const ROAD_EDGE_COLOR := Color("6e98a8")
-const EMPTY_PROPERTY_COLOR := Color("aab6bb")
-const PLAYER_COLORS := [Color("55aee8"), Color("e879a9"), Color("f2994a"), Color("6fcf97"), Color("bb6bd9"), Color("56ccf2")]
-const REWARD_COLOR := Color("f2c94c")
-const WHEEL_COLOR := Color("9b72e8")
-const SHOP_COLOR := Color("f29d49")
-const START_COLOR := Color("65d394")
-const QUIZ_COLOR := Color("42c7c7")
-const CELL_BORDER_COLOR := Color("18323e")
+const BACKGROUND_COLOR := Color("f4dfae")
+const GRID_COLOR := Color(0.55, 0.38, 0.20, 0.18)
+const ROAD_COLOR := Color("d9b879")
+const ROAD_EDGE_COLOR := Color("9d6c39")
+const EMPTY_PROPERTY_COLOR := Color("ead7ad")
+const PLAYER_COLORS := [Color("65b9ed"), Color("f08caf"), Color("f5a856"), Color("78d49b"), Color("c796e8"), Color("70d6df")]
+const REWARD_COLOR := Color("f5cf59")
+const WHEEL_COLOR := Color("c39be8")
+const SHOP_COLOR := Color("f3a75f")
+const START_COLOR := Color("83d59e")
+const QUIZ_COLOR := Color("78d4c5")
+const CELL_BORDER_COLOR := Color("684223")
 
 
 func _ready() -> void:
@@ -167,6 +168,10 @@ func _draw() -> void:
 			fill_color = SHOP_COLOR
 		elif cell_type == GameRules.CELL_QUIZ:
 			fill_color = QUIZ_COLOR
+		var depth := Vector2(11.0, 14.0)
+		draw_rect(Rect2(rect.position + depth + Vector2(3, 4), rect.size), Color(0.35, 0.22, 0.10, 0.22), true)
+		draw_colored_polygon(PackedVector2Array([rect.end - Vector2(rect.size.x, 0), rect.end, rect.end + depth, rect.end - Vector2(rect.size.x, 0) + depth]), fill_color.darkened(0.28))
+		draw_colored_polygon(PackedVector2Array([Vector2(rect.end.x, rect.position.y), rect.end, rect.end + depth, Vector2(rect.end.x, rect.position.y) + depth]), fill_color.darkened(0.38))
 		draw_rect(rect, fill_color, true)
 		draw_rect(rect, CELL_BORDER_COLOR, false, 6.0)
 		draw_string(font, rect.position + Vector2(10.0, 28.0), str(index), HORIZONTAL_ALIGNMENT_LEFT, -1, 21, CELL_BORDER_COLOR)
@@ -209,12 +214,19 @@ func _draw_building(anchor: Vector2, owner_id: int, level: int) -> void:
 	var floors := level if level <= 3 else level + 1
 	var height := floor_height * float(floors)
 	var body := Rect2(anchor + Vector2(-width * 0.5, -height), Vector2(width, height))
+	var depth := Vector2(16.0, 11.0)
+	draw_rect(Rect2(body.position + Vector2(12, 17), body.size + Vector2(8, 3)), Color(0.30, 0.18, 0.08, 0.25), true)
+	draw_colored_polygon(PackedVector2Array([Vector2(body.end.x, body.position.y), body.end, body.end + depth, Vector2(body.end.x, body.position.y) + depth]), color.darkened(0.34))
 	draw_rect(body, color, true)
 	draw_rect(body, CELL_BORDER_COLOR, false, 4.0)
 	if level <= 2:
 		var roof := PackedVector2Array([body.position + Vector2(-8, 0), body.position + Vector2(width * 0.5, -24), body.position + Vector2(width + 8, 0)])
 		draw_colored_polygon(roof, color.lightened(0.18))
 		draw_polyline(PackedVector2Array([roof[0], roof[1], roof[2]]), CELL_BORDER_COLOR, 4.0)
+	else:
+		var roof := PackedVector2Array([body.position + Vector2(-7, 0), body.position + Vector2(9, -14), body.position + Vector2(width + 10, -14), body.position + Vector2(width, 0)])
+		draw_colored_polygon(roof, color.lightened(0.25))
+		draw_polyline(PackedVector2Array([roof[0], roof[1], roof[2], roof[3], roof[0]]), CELL_BORDER_COLOR, 3.0)
 	for floor_index in range(floors):
 		var y := body.end.y - 14.0 - floor_index * floor_height
 		draw_rect(Rect2(Vector2(anchor.x - width * 0.27, y - 7), Vector2(11, 13)), Color("d9f3ff"), true)

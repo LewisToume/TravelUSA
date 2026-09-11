@@ -29,6 +29,22 @@ func _run() -> void:
 	for player_id in range(1, 7): every_inventory_ready = every_inventory_ready and _all_cards_start_at_one(game.players_state[player_id]["inventory"])
 	check(every_inventory_ready, "所有玩家开局 8 种卡牌各发 1 张")
 	check(game.board.get_building_anchor(1).distance_to(game.board.get_cell_position(1)) >= 100.0, "建筑锚点位于道路格旁边")
+	game.game_ui.show_property_prompt({"type": "capture", "cell_index": 1, "owner_id": 2, "property_level": 2, "price": 100, "force_buy_available": true})
+	check(game.game_ui.force_buy_button.visible, "抢占界面显示可用的强购按钮")
+	game.game_ui.show_event_prompt({"type": "reward", "amount": 100, "player_id": 1}, true)
+	check(not game.game_ui.force_buy_button.visible, "奖励提示已重置且不显示强购按钮")
+	game.game_ui.show_wheel_ready(1, true)
+	check(not game.game_ui.force_buy_button.visible, "转盘界面不显示强购按钮")
+	check(game.game_ui.modal_shade.mouse_filter == Control.MOUSE_FILTER_STOP and game.game_ui.active_modal == game.game_ui.wheel_overlay, "主窗口遮罩拦截背景点击")
+	game.game_ui._show_inventory(); game.game_ui.show_leaderboard([])
+	check(not game.game_ui.card_overlay.visible and game.game_ui.leaderboard_overlay.visible, "打开新主窗口会关闭旧主窗口")
+	game.game_ui.modal_close_buttons["leaderboard"].pressed.emit()
+	check(game.game_ui.active_modal == null and not game.game_ui.modal_shade.visible, "点击 X 后解除模态遮罩")
+	check(game.game_ui.modal_close_buttons.size() == 7 and game.game_ui.modal_close_buttons["property"].disabled and game.game_ui.modal_close_buttons["wheel"].disabled and game.game_ui.modal_close_buttons["quiz"].disabled, "全部主窗口有大号 X 且强制流程不可绕过")
+	var warm_panel := game.game_ui.card_overlay.get_theme_stylebox("panel") as StyleBoxFlat
+	check(warm_panel != null and warm_panel.bg_color.a == 1.0 and warm_panel.bg_color.r > warm_panel.bg_color.b and warm_panel.border_width_left >= 3, "主窗口使用不透明暖色背景和棕色边框")
+	check(BoardPath.PSEUDO_3D_ENABLED and BoardPlayer.PSEUDO_3D_ENABLED and BoardPath.BACKGROUND_COLOR.r > BoardPath.BACKGROUND_COLOR.b, "地图、角色与房产启用明亮暖色伪 3D 表现")
+	game.game_ui.hide_all_prompts()
 
 	_set_property(game, 1, 2, 1); _set_property(game, 2, 2, 2)
 	check(game._host_try_roll(1, 3), "开始逐格移动")
@@ -85,6 +101,14 @@ func _run() -> void:
 	p1 = game.players_state[1]; p1["forced_next_roll"] = 0; p1["reverse_next_move"] = false; p1["speed_next_move"] = false; p1["cell"] = 14; game.players_state[1] = p1
 	check(game._host_try_roll(1, 1) and await _wait_action(game, 1, "shop"), "最终停在 SHOP 只打开当前玩家商店")
 	var old_count := int(game.players_state[1]["inventory"][GameRules.CARD_BUILD])
+	var shop_state: Dictionary = game.players_state[1]; shop_state["coins"] = GameRules.card_price(GameRules.CARD_BUILD); shop_state["bankruptcy_state"] = GameRules.BANKRUPTCY_NORMAL; game.players_state[1] = shop_state
+	check(not game._host_buy_card(1, GameRules.CARD_BUILD) and int(game.players_state[1]["coins"]) == GameRules.card_price(GameRules.CARD_BUILD) and String(game.players_state[1]["bankruptcy_state"]) == GameRules.BANKRUPTCY_NORMAL, "商店余额等于价格时提示不足且不会破产")
+	await process_frame
+	var unaffordable_disabled := false
+	for card in game.game_ui.card_list.get_children():
+		if card is Button and card.tooltip_text == String(GameRules.CARD_NAMES[GameRules.CARD_BUILD]): unaffordable_disabled = card.disabled
+	check(unaffordable_disabled and game.game_ui.card_overlay.visible and _toast_contains(game, "金币不足"), "买不起的卡牌按钮变灰、提示金币不足且商店保持打开")
+	shop_state = game.players_state[1]; shop_state["coins"] = GameRules.card_price(GameRules.CARD_BUILD) + 1; game.players_state[1] = shop_state
 	check(game._host_buy_card(1, GameRules.CARD_BUILD), "商店购买由 Host 扣款")
 	check(int(game.players_state[1]["inventory"][GameRules.CARD_BUILD]) == old_count + 1, "购买卡牌进入个人 inventory")
 	_respond(game, 1, "shop_close", true); await _wait_idle(game, 1)
@@ -144,3 +168,8 @@ func _wait_until(callable: Callable, seconds := 5.0) -> bool:
 	var deadline := Time.get_ticks_msec() + int(seconds * 1000.0)
 	while not callable.call() and Time.get_ticks_msec() < deadline: await create_timer(0.01).timeout
 	return callable.call()
+
+func _toast_contains(game, text: String) -> bool:
+	for child in game.game_ui.toast_container.get_children():
+		if text in child.text: return true
+	return false

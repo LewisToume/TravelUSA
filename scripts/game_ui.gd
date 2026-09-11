@@ -72,9 +72,17 @@ var quiz_score: Label
 var quiz_options: VBoxContainer
 var _protection_end_time := 0
 var _bankruptcy_state := GameRules.BANKRUPTCY_NORMAL
+var modal_shade: ColorRect
+var active_modal: Control
+var warm_theme: Theme
+var card_is_shop := false
+var shop_coins := 0
+var modal_close_buttons: Dictionary = {}
 
 func _ready() -> void:
 	_build_card_and_toast_ui()
+	_build_modal_system()
+	_apply_warm_theme()
 	host_button.pressed.connect(func() -> void: host_requested.emit())
 	join_button.pressed.connect(func() -> void: join_requested.emit(address_input.text.strip_edges()))
 	roll_button.pressed.connect(func() -> void: roll_requested.emit())
@@ -90,6 +98,7 @@ func _process(_delta: float) -> void:
 	_update_bankruptcy_text()
 
 func show_startup() -> void:
+	_close_all_modals()
 	startup_overlay.visible = true
 	hud.visible = false
 	property_overlay.visible = false
@@ -169,33 +178,42 @@ func play_card_effect(card_id: String) -> void:
 		dice_label.position = start_position)
 
 func show_property_prompt(action: Dictionary) -> void:
-	skip_button.visible = true
-	force_buy_button.visible = false
+	_reset_property_overlay()
 	var action_type := String(action.get("type", ""))
 	var price := int(action.get("price", 0))
 	var cell := int(action.get("cell_index", 0))
 	var level := int(action.get("property_level", 0))
 	match action_type:
 		"buy":
+			skip_button.visible = true
 			property_title.text = "是否购买该房产？"
 			property_details.text = "格子 %d\n购买价格：%d 金币" % [cell, price]
 			confirm_button.text = "购买"
 			skip_button.text = "跳过"
 		"upgrade":
+			skip_button.visible = true
 			property_title.text = "是否升级房产？"
 			property_details.text = "格子 %d：L%d → L%d\n升级价格：%d 金币" % [cell, level, level + 1, price]
 			confirm_button.text = "升级"
 			skip_button.text = "跳过"
 		"capture":
+			skip_button.visible = true
 			property_title.text = "是否抢占该房产？"
 			property_details.text = "房主：Player %d\n房产等级：L%d\n抢占价格：%d 金币" % [int(action.get("owner_id", -1)), level, price]
 			confirm_button.text = "普通抢占"
 			skip_button.text = "放弃"
-			force_buy_button.visible = bool(action.get("force_buy_available", false))
+			force_buy_button.visible = action_type == "capture" and bool(action.get("force_buy_available", false))
 	confirm_button.disabled = not bool(action.get("can_afford", true))
-	property_overlay.visible = true
+	_open_modal(property_overlay)
+
+func _reset_property_overlay() -> void:
+	force_buy_button.visible = false
+	skip_button.visible = false
+	confirm_button.visible = true
+	confirm_button.disabled = false
 
 func show_event_prompt(action: Dictionary, can_confirm: bool) -> void:
+	_reset_property_overlay()
 	var action_type := String(action.get("type", ""))
 	var amount := int(action.get("amount", 0))
 	if action_type == "reward":
@@ -206,10 +224,10 @@ func show_event_prompt(action: Dictionary, can_confirm: bool) -> void:
 		property_details.text = "获得 %d 金币" % amount if amount >= 0 else "损失 %d 金币" % absi(amount)
 	confirm_button.text = "确定" if can_confirm else "由 Player %d 确认" % int(action.get("player_id", 0))
 	confirm_button.disabled = not can_confirm
-	skip_button.visible = false
-	property_overlay.visible = true
+	_open_modal(property_overlay)
 
 func show_toll_prompt(action: Dictionary, local_player_id: int) -> void:
+	_reset_property_overlay()
 	var payer_id := int(action["payer_id"])
 	var owner_id := int(action["owner_id"])
 	var amount := int(action["amount"])
@@ -223,8 +241,7 @@ func show_toll_prompt(action: Dictionary, local_player_id: int) -> void:
 		property_details.text = "Player %d 经过你的 L%d 房产\nPlayer %d 向你支付了 %d 金币" % [payer_id, level, payer_id, amount]
 		confirm_button.text = "由 Player %d 确认" % payer_id
 		confirm_button.disabled = true
-	skip_button.visible = false
-	property_overlay.visible = true
+	_open_modal(property_overlay)
 
 func show_toll_toast(action: Dictionary, local_player_id: int) -> void:
 	var payer_id := int(action["payer_id"])
@@ -250,18 +267,21 @@ func show_toast(message: String) -> void:
 
 func show_shop(inventory: Dictionary, coins: int) -> void:
 	_latest_inventory = inventory.duplicate(true)
+	shop_coins = coins
+	card_is_shop = true
 	_populate_card_list(true)
 	card_title.text = "卡牌商店"
-	card_coins.text = "金币：%d" % coins
+	card_coins.text = "金币：%d（余额必须高于价格）" % coins
 	card_close_button.text = "离开商店"
-	card_overlay.visible = true
+	_open_modal(card_overlay)
 
 func _show_inventory() -> void:
+	card_is_shop = false
 	_populate_card_list(false)
 	card_title.text = "我的卡牌"
 	card_coins.text = "选择卡牌后按对应方式选取目标"
 	card_close_button.text = "关闭"
-	card_overlay.visible = true
+	_open_modal(card_overlay)
 
 func _populate_card_list(shop_mode: bool) -> void:
 	for child in card_list.get_children(): child.queue_free()
@@ -274,6 +294,7 @@ func _populate_card_list(shop_mode: bool) -> void:
 		button.add_theme_font_size_override("font_size", 30)
 		button.disabled = not shop_mode and count <= 0
 		if shop_mode:
+			button.disabled = shop_coins <= GameRules.card_price(card_id)
 			button.pressed.connect(func() -> void: shop_card_requested.emit(card_id))
 		else:
 			button.pressed.connect(func() -> void:
@@ -315,7 +336,10 @@ func _build_card_and_toast_ui() -> void:
 	mailbox_overlay = PanelContainer.new()
 	mailbox_overlay.set_anchors_preset(Control.PRESET_CENTER_RIGHT)
 	mailbox_overlay.offset_left = -620; mailbox_overlay.offset_top = -310; mailbox_overlay.offset_right = -28; mailbox_overlay.offset_bottom = 310
-	mailbox_list = VBoxContainer.new(); mailbox_overlay.add_child(mailbox_list)
+	var mailbox_content := VBoxContainer.new(); mailbox_overlay.add_child(mailbox_content)
+	var mailbox_title := Label.new(); mailbox_title.text = "消息邮箱"; mailbox_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; mailbox_title.add_theme_font_size_override("font_size", 32); mailbox_content.add_child(mailbox_title)
+	var mailbox_scroll := ScrollContainer.new(); mailbox_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL; mailbox_content.add_child(mailbox_scroll)
+	mailbox_list = VBoxContainer.new(); mailbox_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL; mailbox_scroll.add_child(mailbox_list)
 	mailbox_overlay.visible = false; add_child(mailbox_overlay)
 	card_overlay = PanelContainer.new()
 	card_overlay.set_anchors_preset(Control.PRESET_CENTER)
@@ -327,9 +351,7 @@ func _build_card_and_toast_ui() -> void:
 	card_list = GridContainer.new(); card_list.columns = 4; content.add_child(card_list)
 	card_close_button = Button.new(); content.add_child(card_close_button)
 	card_close_button.pressed.connect(func() -> void:
-		var was_shop := card_title.text == "卡牌商店"
-		card_overlay.visible = false
-		if was_shop: shop_closed.emit())
+		_close_card_window())
 	card_overlay.visible = false
 	add_child(card_overlay)
 	force_buy_button = Button.new()
@@ -340,6 +362,13 @@ func _build_card_and_toast_ui() -> void:
 	_build_selection_ui()
 	_build_leaderboard_ui()
 	_build_quiz_ui()
+	_add_close_button(property_overlay.get_node("Center/Panel"), "property", Callable(), false)
+	_add_close_button(wheel_overlay.get_node("Shade/Center/Panel"), "wheel", Callable(), false)
+	_add_close_button(card_overlay, "card", _close_card_window, true)
+	_add_close_button(mailbox_overlay, "mailbox", func() -> void: _close_modal(mailbox_overlay), true)
+	_add_close_button(leaderboard_overlay, "leaderboard", func() -> void: _close_modal(leaderboard_overlay), true)
+	_add_close_button(selection_overlay, "selection", func() -> void: target_selection_cancelled.emit(), true)
+	_add_close_button(quiz_overlay, "quiz", Callable(), false)
 
 func _update_bankruptcy_text() -> void:
 	if bankruptcy_label == null: return
@@ -356,14 +385,14 @@ func _build_leaderboard_ui() -> void:
 	var content := VBoxContainer.new(); leaderboard_overlay.add_child(content)
 	var title := Label.new(); title.text = "财富排行榜"; title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; title.add_theme_font_size_override("font_size", 34); content.add_child(title)
 	leaderboard_list = VBoxContainer.new(); content.add_child(leaderboard_list)
-	var close := Button.new(); close.text = "关闭"; close.pressed.connect(func() -> void: leaderboard_overlay.visible = false); content.add_child(close)
+	var close := Button.new(); close.text = "关闭"; close.pressed.connect(func() -> void: _close_modal(leaderboard_overlay)); content.add_child(close)
 	leaderboard_overlay.visible = false; add_child(leaderboard_overlay)
 
 func show_leaderboard(entries: Array) -> void:
 	for child in leaderboard_list.get_children(): child.queue_free()
 	for entry in entries:
 		var label := Label.new(); label.text = "%d. Player %d\n   总财富：%d  现金：%d  房产：%d" % [int(entry["rank"]), int(entry["player_id"]), int(entry["total_wealth"]), int(entry["coins"]), int(entry["property_value"])]; label.add_theme_font_size_override("font_size", 22); leaderboard_list.add_child(label)
-	leaderboard_overlay.visible = true
+	_open_modal(leaderboard_overlay)
 
 func _build_quiz_ui() -> void:
 	quiz_overlay = PanelContainer.new(); quiz_overlay.set_anchors_preset(Control.PRESET_CENTER); quiz_overlay.offset_left = -420; quiz_overlay.offset_top = -330; quiz_overlay.offset_right = 420; quiz_overlay.offset_bottom = 330
@@ -387,7 +416,7 @@ func show_quiz_question(action: Dictionary) -> void:
 				if sibling is Button: sibling.disabled = true
 			quiz_answer_requested.emit(index))
 		quiz_options.add_child(button)
-	quiz_overlay.visible = true
+	_open_modal(quiz_overlay)
 
 func _build_selection_ui() -> void:
 	selection_overlay = PanelContainer.new()
@@ -409,7 +438,7 @@ func show_map_target_selector(title: String) -> void:
 	selection_title.text = title
 	selection_details.text = "点击地图中高亮并呼吸的房产"
 	selection_confirm_button.visible = false
-	selection_overlay.visible = true
+	_open_modal(selection_overlay)
 
 func show_remote_dice_selector() -> void:
 	_clear_selection_choices()
@@ -423,7 +452,7 @@ func show_remote_dice_selector() -> void:
 		selection_choices.add_child(button)
 	selection_confirm_button.visible = true
 	selection_confirm_button.disabled = true
-	selection_overlay.visible = true
+	_open_modal(selection_overlay)
 
 func _select_remote_roll(value: int, selected_button: Button) -> void:
 	selected_remote_roll = value
@@ -444,7 +473,7 @@ func show_player_selector(players: Dictionary, target_ids: Array[int]) -> void:
 		button.pressed.connect(func() -> void: player_target_selected.emit(player_id))
 		selection_choices.add_child(button)
 	selection_confirm_button.visible = false
-	selection_overlay.visible = true
+	_open_modal(selection_overlay)
 
 func show_card_confirmation(title: String, details: String) -> void:
 	_clear_selection_choices()
@@ -452,10 +481,10 @@ func show_card_confirmation(title: String, details: String) -> void:
 	selection_details.text = details
 	selection_confirm_button.visible = true
 	selection_confirm_button.disabled = false
-	selection_overlay.visible = true
+	_open_modal(selection_overlay)
 
 func hide_target_selector() -> void:
-	selection_overlay.visible = false
+	_close_modal(selection_overlay)
 	_clear_selection_choices()
 
 func _clear_selection_choices() -> void:
@@ -475,30 +504,115 @@ func _update_mailbox(notifications: Array) -> void:
 	for event in notifications:
 		var label := Label.new()
 		label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		label.text = "%s  %s" % [String(event.get("time", "")), String(event.get("message", ""))]
+		var prefixes := {"daily_tax": "【税收】", "bankrupt": "【破产】", "bankruptcy_relief": "【破产】", "protection_ended": "【破产】", "quiz": "【答题】", "property": "【房产】", "toll": "【房产】", "card": "【卡牌】"}
+		label.text = "%s %s  %s" % [String(prefixes.get(String(event.get("event_type", "")), "【通知】")), String(event.get("time", "")), String(event.get("message", ""))]
 		mailbox_list.add_child(label)
 
 func _toggle_mailbox() -> void:
-	mailbox_overlay.visible = not mailbox_overlay.visible
-	if mailbox_overlay.visible:
+	if active_modal == mailbox_overlay:
+		_close_modal(mailbox_overlay)
+	else:
+		_open_modal(mailbox_overlay)
 		unread_count = 0
 		mailbox_button.text = "✉ 0"
 
 func show_wheel_ready(action_player_id: int, can_start: bool) -> void:
+	_begin_modal(wheel_overlay)
 	wheel_overlay.show_ready(action_player_id, can_start)
 
 func play_wheel_spin(result: int, duration: float) -> void:
 	wheel_overlay.play_spin(result, duration)
 
 func show_wheel_result(result: int, can_confirm: bool, action_player_id: int) -> void:
+	_begin_modal(wheel_overlay)
 	wheel_overlay.show_result(result, can_confirm, action_player_id)
 
 func hide_property_prompt() -> void:
-	property_overlay.visible = false
+	_close_modal(property_overlay)
 
 func hide_all_prompts() -> void:
-	property_overlay.visible = false
-	wheel_overlay.hide_wheel()
-	card_overlay.visible = false
-	hide_target_selector()
-	quiz_overlay.visible = false
+	_close_all_modals()
+
+func _build_modal_system() -> void:
+	modal_shade = ColorRect.new()
+	modal_shade.name = "ModalInputBlocker"
+	modal_shade.set_anchors_preset(Control.PRESET_FULL_RECT)
+	modal_shade.color = Color(0.25, 0.16, 0.08, 0.46)
+	modal_shade.mouse_filter = Control.MOUSE_FILTER_STOP
+	modal_shade.visible = false
+	add_child(modal_shade)
+	move_child(modal_shade, property_overlay.get_index())
+
+func _begin_modal(target: Control) -> void:
+	if target != property_overlay: force_buy_button.visible = false
+	if active_modal != null and active_modal != target:
+		_hide_modal_visual(active_modal)
+	active_modal = target
+	modal_shade.visible = true
+	target.visible = true
+
+func _open_modal(target: Control) -> void:
+	_begin_modal(target)
+
+func _close_modal(target: Control) -> void:
+	_hide_modal_visual(target)
+	if active_modal == target:
+		active_modal = null
+		modal_shade.visible = false
+
+func _hide_modal_visual(target: Control) -> void:
+	if target == wheel_overlay: wheel_overlay.hide_wheel()
+	else: target.visible = false
+
+func _close_all_modals() -> void:
+	for target in [property_overlay, wheel_overlay, card_overlay, mailbox_overlay, leaderboard_overlay, selection_overlay, quiz_overlay]:
+		if target != null: _hide_modal_visual(target)
+	active_modal = null
+	force_buy_button.visible = false
+	if modal_shade != null: modal_shade.visible = false
+
+func _close_card_window() -> void:
+	_close_modal(card_overlay)
+	if card_is_shop: shop_closed.emit()
+	card_is_shop = false
+
+func _add_close_button(panel: Control, key: String, handler: Callable, enabled: bool) -> void:
+	var content := panel.get_child(0) as VBoxContainer
+	var header := HBoxContainer.new()
+	var spacer := Control.new(); spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL; header.add_child(spacer)
+	var close := Button.new()
+	close.name = "CloseX"
+	close.text = "×"
+	close.custom_minimum_size = Vector2(58, 58)
+	close.add_theme_font_size_override("font_size", 38)
+	close.disabled = not enabled
+	if enabled: close.pressed.connect(handler)
+	header.add_child(close)
+	content.add_child(header)
+	content.move_child(header, 0)
+	modal_close_buttons[key] = close
+
+func _apply_warm_theme() -> void:
+	warm_theme = Theme.new()
+	var panel := StyleBoxFlat.new(); panel.bg_color = Color("f7e7bd"); panel.border_color = Color("8b5a2b"); panel.set_border_width_all(5); panel.set_corner_radius_all(18); panel.set_content_margin_all(24)
+	var normal := StyleBoxFlat.new(); normal.bg_color = Color("e7bd72"); normal.border_color = Color("8b5a2b"); normal.set_border_width_all(3); normal.set_corner_radius_all(12)
+	var hover := normal.duplicate(); hover.bg_color = Color("f4cf83")
+	var pressed := normal.duplicate(); pressed.bg_color = Color("d29a4a")
+	var disabled := normal.duplicate(); disabled.bg_color = Color("cdbf9f"); disabled.border_color = Color("9b8a6d")
+	var input_style := StyleBoxFlat.new(); input_style.bg_color = Color("fff8e5"); input_style.border_color = Color("9a6a37"); input_style.set_border_width_all(3); input_style.set_corner_radius_all(8)
+	warm_theme.set_stylebox("panel", "PanelContainer", panel)
+	warm_theme.set_stylebox("normal", "Button", normal); warm_theme.set_stylebox("hover", "Button", hover); warm_theme.set_stylebox("pressed", "Button", pressed); warm_theme.set_stylebox("disabled", "Button", disabled)
+	warm_theme.set_stylebox("normal", "LineEdit", input_style); warm_theme.set_stylebox("focus", "LineEdit", input_style)
+	warm_theme.set_color("font_color", "Label", Color("4b2d18")); warm_theme.set_color("font_color", "Button", Color("4b2d18")); warm_theme.set_color("font_disabled_color", "Button", Color("75634c"))
+	warm_theme.set_color("font_color", "LineEdit", Color("4b2d18"))
+	for root_control in [startup_overlay, hud, property_overlay, wheel_overlay, card_overlay, mailbox_overlay, leaderboard_overlay, selection_overlay, quiz_overlay]:
+		root_control.theme = warm_theme
+		_remove_cold_overrides(root_control)
+	$StartupOverlay/Backdrop.color = Color("f2d99d")
+	$PropertyOverlay/Shade.color = Color(0.25, 0.16, 0.08, 0.46)
+	wheel_overlay.get_node("Shade").color = Color(0.25, 0.16, 0.08, 0.46)
+
+func _remove_cold_overrides(node: Node) -> void:
+	if node is PanelContainer: node.remove_theme_stylebox_override("panel")
+	if node is Label: node.remove_theme_color_override("font_color")
+	for child in node.get_children(): _remove_cold_overrides(child)

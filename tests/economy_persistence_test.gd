@@ -16,13 +16,14 @@ func _run() -> void:
 	await process_frame; await process_frame
 	game.test_mode = true; game.test_wheel_result_override = 200; game.test_wheel_spin_duration = 0.01; game.is_host = true; game.local_player_id = 1; game.game_is_started = false; game.active_player_ids.assign([1, 2, 3, 4])
 	game.save_path = SAVE; game.save_temp_path = TEMP
-	check(GameRules.MAP_CELL_TYPES.count(GameRules.CELL_QUIZ) == 9, "地图包含 9 个均匀分布的 QUIZ 格")
+	check(GameRules.MAP_CELL_TYPES.count(GameRules.CELL_REWARD) == 0 and GameRules.MAP_CELL_TYPES.count(GameRules.CELL_QUIZ) == 13, "奖励格已全部替换为答题测试格")
 	check(QuestionBank.QUESTIONS.size() >= 5 and int(QuestionBank.QUESTIONS[0]["correct"]) == 0, "QuestionBank 独立且 A 为正确答案")
 
 	_set_property(1, 2, 3)
 	var p1: Dictionary = game.players_state[1]; p1["coins"] = 40; game.players_state[1] = p1
 	check(game._settle_step_toll(1, 1), "余额不足时仍由 Host 结算过路费")
 	check(int(game.players_state[1]["coins"]) == 0 and String(game.players_state[1]["bankruptcy_state"]) == GameRules.BANKRUPTCY_BANKRUPT, "100 过路费只实付 40 且进入破产")
+	check(game.player_nodes[1].is_bankrupt and game.player_nodes[1]._bankruptcy_effect_until > Time.get_ticks_msec(), "本地破产播放灰化、抖动与破碎金币强化动画")
 	check(int(game.players_state[2]["coins"]) == 1040 and int(game.players_state[2]["daily_taxable_income"]) == 40, "房主只收到实际付款且计入应税收入")
 	check(not game.can_player_roll(1) and not game._host_use_card(1, GameRules.CARD_SPEED, 0), "当天破产不能掷骰或使用卡牌")
 
@@ -46,7 +47,9 @@ func _run() -> void:
 	check(bool(game.players_state[1]["toll_free_next_action"]), "保护期完成整次掷骰行动仍保留下一次免租卡")
 	game.server_time_override = int(game.players_state[1]["protection_end_time"])
 	game._check_protection_expiry()
+	game.game_is_started = false
 	check(String(game.players_state[1]["bankruptcy_state"]) == GameRules.BANKRUPTCY_NORMAL, "5 小时后自动恢复 NORMAL")
+	game.server_time_override = bankrupt_day + 2 * 86400
 
 	await _run_quiz(3, 0)
 	check(int(game.players_state[3]["coins"]) == 1200 and int(game.players_state[3]["daily_taxable_income"]) == 200, "五题全选 A 共奖励 200 且全部计税")
@@ -84,15 +87,24 @@ func _run() -> void:
 	var p2_rank: Dictionary = _rank_entry(ranking, 2)
 	check(int(p2_rank["property_value"]) >= 800, "财富榜按 L1～L5 建造价值统计房产")
 
-	var tax_time := Time.get_unix_time_from_datetime_dict({"year": 2026, "month": 9, "day": 12, "hour": 13, "minute": 21, "second": 0})
-	game.server_time_override = tax_time
+	var before_tax_time := Time.get_unix_time_from_datetime_dict({"year": 2026, "month": 9, "day": 12, "hour": 15, "minute": 30, "second": 0})
+	var tax_time := Time.get_unix_time_from_datetime_dict({"year": 2026, "month": 9, "day": 12, "hour": 16, "minute": 31, "second": 0})
 	p2 = game.players_state[2]; p2["coins"] = 10; p2["daily_taxable_income"] = 101; p2["last_tax_date"] = "2026-09-11"; p2["bankruptcy_state"] = GameRules.BANKRUPTCY_NORMAL; game.players_state[2] = p2
-	check(game._check_player_tax(2) and int(game.players_state[2]["coins"]) == 0 and String(game.players_state[2]["bankruptcy_state"]) == GameRules.BANKRUPTCY_BANKRUPT, "13:20 后按 floor(收入×10%) 扣税并可触发破产")
+	game.server_time_override = before_tax_time
+	check(not game._check_player_tax(2) and int(game.players_state[2]["coins"]) == 10, "15:30 尚未到统一税收时间")
+	game.server_time_override = tax_time
+	check(game._check_player_tax(2) and int(game.players_state[2]["coins"]) == 0 and String(game.players_state[2]["bankruptcy_state"]) == GameRules.BANKRUPTCY_BANKRUPT, "16:30 后按 floor(收入×10%) 扣税并可触发破产")
 	check(not game._check_player_tax(2), "同一天税收绝不重复结算")
+	var p4: Dictionary = game.players_state[4]; p4["coins"] = 500; p4["daily_taxable_income"] = 0; p4["last_tax_date"] = "2026-09-11"; p4["bankruptcy_state"] = GameRules.BANKRUPTCY_NORMAL; game.players_state[4] = p4
+	var toast_count: int = game.game_ui.toast_container.get_child_count()
+	check(game._check_player_tax(4) and String(game.notifications[0]["event_type"]) == "daily_tax" and int(game.notifications[0]["amount"]) == 0, "tax=0 仍生成 daily_tax 邮箱记录")
+	check(game.game_ui.toast_container.get_child_count() > toast_count, "每日税收结算一定显示 Toast")
+	game.game_ui.update_game_state(1, game.players_state, game.active_player_ids, game.last_rolls, game.notifications)
+	check(_mailbox_contains("【税收】"), "税收消息以税收前缀进入邮箱")
 
 	var saved_cell := 14
 	p3 = game.players_state[3]; p3["cell"] = saved_cell; p3["stamina"] = 7; p3["inventory"][GameRules.CARD_BUILD] = 4; p3["coins"] = 1000; p3["daily_taxable_income"] = 100; p3["last_tax_date"] = "2026-09-11"; game.players_state[3] = p3
-	var p4: Dictionary = game.players_state[4]; p4["bankruptcy_state"] = GameRules.BANKRUPTCY_PROTECTED; p4["protection_end_time"] = tax_time + 3600; game.players_state[4] = p4
+	p4 = game.players_state[4]; p4["bankruptcy_state"] = GameRules.BANKRUPTCY_PROTECTED; p4["protection_end_time"] = tax_time + 3600; game.players_state[4] = p4
 	_set_property(14, 3, 4)
 	check(game._save_game(), "Host 使用临时文件原子保存")
 	var restored = (load("res://scenes/main.tscn") as PackedScene).instantiate(); root.add_child(restored); await process_frame
@@ -102,7 +114,7 @@ func _run() -> void:
 	check(String(restored.players_state[2]["bankruptcy_state"]) == GameRules.BANKRUPTCY_BANKRUPT, "Host 重启后破产状态保持")
 	check(int(restored.players_state[4]["protection_end_time"]) - restored.server_time_override == 3600, "Host 重启后保护剩余时间正确")
 	restored._check_player_login(3)
-	check(int(restored.players_state[3]["coins"]) == 990 and String(restored.players_state[3]["last_tax_date"]) == "2026-09-12", "13:20 离线后登录会补结算当日税收")
+	check(int(restored.players_state[3]["coins"]) == 990 and String(restored.players_state[3]["last_tax_date"]) == "2026-09-12", "16:30 离线后登录会补结算当日税收")
 
 	var corrupt = (load("res://scenes/main.tscn") as PackedScene).instantiate(); root.add_child(corrupt); await process_frame
 	corrupt.is_host = true; corrupt.save_path = "user://corrupt-save.json"; corrupt.save_temp_path = "user://corrupt-save.tmp"
@@ -130,6 +142,11 @@ func _rank_entry(entries: Array, player_id: int) -> Dictionary:
 	for entry in entries:
 		if int(entry["player_id"]) == player_id: return entry
 	return {}
+
+func _mailbox_contains(text: String) -> bool:
+	for child in game.game_ui.mailbox_list.get_children():
+		if text in child.text: return true
+	return false
 
 func _wait(callable: Callable, seconds := 4.0) -> bool:
 	var deadline := Time.get_ticks_msec() + int(seconds * 1000.0)
