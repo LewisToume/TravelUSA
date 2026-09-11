@@ -10,6 +10,7 @@ class_name BoardPath
 var _cell_positions: PackedVector2Array = PackedVector2Array()
 var _route_bounds: Rect2
 var property_states: Array = []
+var building_effects: Dictionary = {}
 
 const BACKGROUND_COLOR := Color("132331")
 const GRID_COLOR := Color(0.16, 0.25, 0.31, 0.5)
@@ -83,6 +84,13 @@ func set_property_states(states: Array) -> void:
 	property_states = states.duplicate(true)
 	queue_redraw()
 
+func play_building_effect(cell_index: int, effect_type: String) -> void:
+	building_effects[cell_index] = {"type": effect_type, "started": Time.get_ticks_msec()}
+	queue_redraw()
+	await get_tree().create_timer(0.55).timeout
+	building_effects.erase(cell_index)
+	queue_redraw()
+
 
 func _draw() -> void:
 	if _cell_positions.is_empty():
@@ -133,6 +141,13 @@ func _draw() -> void:
 			draw_string(font, baseline, center_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, CELL_BORDER_COLOR)
 		if cell_type == GameRules.CELL_PROPERTY and owner_id >= 1 and property_level >= 1:
 			_draw_building(get_building_anchor(index), owner_id, property_level)
+			if building_effects.has(index):
+				_draw_building_effect(get_building_anchor(index), String(building_effects[index]["type"]))
+
+func _draw_building_effect(anchor: Vector2, effect_type: String) -> void:
+	var color := Color(0.9, 0.95, 1.0, 0.7) if effect_type == "upgrade" else Color(0.55, 0.55, 0.55, 0.7)
+	for offset in [Vector2(-24, -48), Vector2(8, -76), Vector2(30, -38)]:
+		draw_circle(anchor + offset, 16.0, color)
 
 func _draw_building(anchor: Vector2, owner_id: int, level: int) -> void:
 	var color: Color = PLAYER_COLORS[posmod(owner_id - 1, PLAYER_COLORS.size())]

@@ -13,6 +13,7 @@ func _run() -> void:
 	await process_frame; await process_frame
 	game.test_mode = true
 	game.test_wheel_spin_duration = 0.1
+	game.dice_animation_duration = 0.1
 	for player_id in game.player_nodes:
 		game.player_nodes[player_id].move_speed_pixels_per_second = 100000.0
 		game.player_nodes[player_id].minimum_step_duration = 0.01
@@ -28,6 +29,7 @@ func _run() -> void:
 
 	_set_property(game, 1, 2, 1); _set_property(game, 2, 2, 2)
 	check(game._host_try_roll(1, 3), "开始逐格移动")
+	check(game.game_ui.dice_label.visible, "骰子动画在移动前显示服务器确定的最终点数")
 	check(await _wait_action(game, 1, "buy"), "经过两个敌产后仍继续移动到最终格")
 	check(int(game.players_state[1]["coins"]) == 925 and int(game.players_state[2]["coins"]) == 1075, "连续经过 L1/L2 分别结算 25/50 过路费")
 	check(game.game_ui.toast_container.get_child_count() >= 2, "过路费使用可排队且不阻塞的 Toast")
@@ -40,15 +42,20 @@ func _run() -> void:
 	check(int(game.players_state[1]["coins"]) == 925 and not bool(game.players_state[1]["next_toll_free"]), "下一次过路费被免除并消耗状态")
 	_respond(game, 1, "decision", false); await _wait_idle(game, 1)
 
-	check(game._host_use_card(1, GameRules.CARD_REMOTE_DICE, 6) and int(game.players_state[1]["forced_next_roll"]) == 6, "遥控骰子记录 Host 验证的 1～6 点")
+	var stamina_before_remote := int(game.players_state[1]["stamina"])
+	check(game._host_use_card(1, GameRules.CARD_REMOTE_DICE, 6) and String(game.players_state[1]["action_state"]) == GameRules.ACTION_RESOLVING and int(game.players_state[1]["stamina"]) == stamina_before_remote - 1, "遥控骰子确认后由 Host 扣活力并立即开始指定点数移动")
+	check(await _wait_action(game, 1, "buy"), "遥控骰子动画结束后按指定点数落地")
+	_respond(game, 1, "decision", false); await _wait_idle(game, 1)
 	check(game._host_use_card(1, GameRules.CARD_REVERSE, 0) and bool(game.players_state[1]["reverse_next_move"]), "转向卡设置下一次反向移动")
 	check(game._host_use_card(1, GameRules.CARD_SPEED, 0) and bool(game.players_state[1]["speed_next_move"]), "加速卡设置下一次骰子距离 +3")
-	_set_property(game, 4, 1, 1)
-	check(game._host_use_card(1, GameRules.CARD_BUILD, 4) and int(game.properties[4]["property_level"]) == 2, "建房卡免费升级自己的房产")
-	_set_property(game, 6, 2, 3)
-	check(game._host_use_card(1, GameRules.CARD_DEMOLISH, 6) and int(game.properties[6]["property_level"]) == 2, "拆房卡降低敌产一级且保留所有权")
+	p1 = game.players_state[1]; p1["cell"] = 1; game.players_state[1] = p1; game.player_1.place_at_cell(1, game.board)
+	_set_property(game, 2, 1, 1)
+	check(game._host_use_card(1, GameRules.CARD_BUILD, 2) and int(game.properties[2]["property_level"]) == 2, "建房卡免费升级自己的房产")
+	_set_property(game, 3, 2, 3)
+	check(game._host_use_card(1, GameRules.CARD_DEMOLISH, 3) and int(game.properties[3]["property_level"]) == 2, "拆房卡降低敌产一级且保留所有权")
 	p1 = game.players_state[1]; p1["cell"] = 7; game.players_state[1] = p1; _set_property(game, 7, 2, 1)
 	check(game._host_use_card(1, GameRules.CARD_FORCE_BUY, 0) and int(game.properties[7]["owner_id"]) == 1, "强购卡按当前抢占费用取得脚下敌产")
+	p1 = game.players_state[1]; p1["cell"] = 1; game.players_state[1] = p1; game.player_1.place_at_cell(1, game.board)
 	var before_total := int(game.players_state[1]["coins"]) + int(game.players_state[2]["coins"])
 	check(game._host_use_card(1, GameRules.CARD_EQUALIZE, 2), "均富卡仅对合法目标执行")
 	check(int(game.players_state[1]["coins"]) + int(game.players_state[2]["coins"]) == before_total and absi(int(game.players_state[1]["coins"]) - int(game.players_state[2]["coins"])) <= 1, "均富卡保持总金币并平均分配")
@@ -63,6 +70,18 @@ func _run() -> void:
 
 	check(not game._host_use_card(1, "fake_card", 0), "Host 拒绝不存在的卡牌")
 	check(_card_prices_correct(), "8 种卡牌价格集中配置且数值正确")
+	check(not game.game_ui.all_players_label.visible, "HUD 不显示其他玩家金币和活力")
+	check(game.notifications.size() > 0 and game.notifications.size() <= 100, "重要事件写入最多 100 条的全局通知")
+
+	# Empty land is deliberately not reserved: both see buy, first confirmation wins.
+	for player_id in [1, 2]:
+		var reset: Dictionary = game.players_state[player_id]; reset["cell"] = 7; reset["action_state"] = GameRules.ACTION_IDLE; reset["forced_next_roll"] = 0; reset["reverse_next_move"] = false; reset["speed_next_move"] = false; game.players_state[player_id] = reset; game._player_node(player_id).place_at_cell(7, game.board)
+	check(game._host_try_roll(1, 1) and game._host_try_roll(2, 1), "同一空地可同时给多个玩家购买机会")
+	check(await _wait_action(game, 1, "buy") and await _wait_action(game, 2, "buy"), "空地未被锁定或排队")
+	var p1_coins := int(game.players_state[1]["coins"])
+	_respond(game, 2, "decision", true); await _wait_idle(game, 2)
+	_respond(game, 1, "decision", true); await _wait_idle(game, 1)
+	check(int(game.properties[8]["owner_id"]) == 2 and int(game.players_state[1]["coins"]) == p1_coins, "先确认者获得土地，后确认者不扣金币")
 
 	if failures.is_empty(): print("ACCEPTANCE RESULT | PASS | 多人、逐格收费、建筑、商店和卡牌规则通过"); quit(0)
 	else: print("ACCEPTANCE RESULT | FAIL | ", failures); quit(1)

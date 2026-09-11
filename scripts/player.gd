@@ -13,10 +13,17 @@ var current_cell_index: int = 0
 var is_moving: bool = false
 var _step_queue: Array[int] = []
 var _step_queue_processing: bool = false
+var _popup_text := ""
+var _popup_color := Color.WHITE
+var _popup_alpha := 0.0
 
 
 func _ready() -> void:
 	queue_redraw()
+
+func _process(_delta: float) -> void:
+	if _popup_alpha > 0.0:
+		queue_redraw()
 
 
 func place_at_cell(cell_index: int, board: BoardPath) -> void:
@@ -74,6 +81,15 @@ func _move_smoothly_to(target_position: Vector2) -> void:
 	tween.tween_property(self, "position", target_position, duration)
 	await tween.finished
 
+func show_money_popup(amount: int) -> void:
+	_popup_text = "%+d" % amount
+	_popup_color = Color("75e6a5") if amount >= 0 else Color("ff7c7c")
+	_popup_alpha = 1.0
+	queue_redraw()
+	var tween := create_tween()
+	tween.tween_property(self, "_popup_alpha", 0.0, 1.4)
+	tween.tween_callback(queue_redraw)
+
 
 func _draw() -> void:
 	draw_circle(Vector2(5.0, 8.0), 37.0, Color(0.0, 0.0, 0.0, 0.3))
@@ -83,6 +99,9 @@ func _draw() -> void:
 	var font := ThemeDB.fallback_font
 	var size := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 22)
 	draw_string(font, Vector2(-size.x * 0.5, size.y * 0.32), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 22, Color.WHITE)
+	if _popup_alpha > 0.0:
+		var popup_size := font.get_string_size(_popup_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 25)
+		draw_string(font, Vector2(-popup_size.x * 0.5, -54), _popup_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 25, Color(_popup_color, _popup_alpha))
 
 func _player_offset() -> Vector2:
 	return Vector2.RIGHT.rotated(float(player_id - 1) * TAU / 6.0) * 48.0

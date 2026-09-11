@@ -76,6 +76,7 @@ static func build_player_state(player_id: int) -> Dictionary:
 		"reverse_next_move": false,
 		"speed_next_move": false,
 		"forced_next_roll": 0,
+		"status_effects": {"toll_free_charges": 0, "reverse_next_move": false, "speed_bonus_next_move": 0, "forced_next_roll": 0},
 	}
 
 static func build_initial_inventory() -> Dictionary:

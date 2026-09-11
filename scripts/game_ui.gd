@@ -35,10 +35,16 @@ var card_button: Button
 var card_overlay: PanelContainer
 var card_title: Label
 var card_coins: Label
-var card_list: VBoxContainer
+var card_list: Container
 var target_selector: SpinBox
 var card_close_button: Button
 var toast_container: VBoxContainer
+var dice_label: Label
+var mailbox_button: Button
+var mailbox_overlay: PanelContainer
+var mailbox_list: VBoxContainer
+var unread_count := 0
+var _known_notification_ids: Dictionary = {}
 var _latest_inventory: Dictionary = {}
 
 func _ready() -> void:
@@ -70,16 +76,12 @@ func set_lobby_buttons_enabled(enabled: bool) -> void:
 	host_button.disabled = not enabled
 	join_button.disabled = not enabled
 
-func update_game_state(local_player_id: int, players: Dictionary, active_player_ids: Array, last_rolls: Dictionary) -> void:
+func update_game_state(local_player_id: int, players: Dictionary, _active_player_ids: Array, last_rolls: Dictionary, notifications: Array = []) -> void:
 	player_label.text = "Player %d" % local_player_id
 	var own_state: Dictionary = players.get(local_player_id, {})
 	coins_label.text = "自己的金币：%d" % int(own_state.get("coins", 0))
 	stamina_label.text = "自己的活力：%d" % int(own_state.get("stamina", 0))
-	var summaries: Array[String] = []
-	for player_id in active_player_ids:
-		var state: Dictionary = players.get(player_id, {})
-		summaries.append("P%d:%d金/%d活" % [player_id, int(state.get("coins", 0)), int(state.get("stamina", 0))])
-	all_players_label.text = "  |  ".join(summaries)
+	all_players_label.visible = false
 	_latest_inventory = own_state.get("inventory", {}).duplicate(true)
 	cell_label.text = "当前位置：%d" % int(own_state.get("cell", 0))
 	var roll_value := int(last_rolls.get(local_player_id, 0))
@@ -89,7 +91,40 @@ func update_game_state(local_player_id: int, players: Dictionary, active_player_
 	var can_roll := has_stamina and not resolving
 	roll_button.disabled = not can_roll
 	roll_button.text = "掷骰子" if can_roll else ("处理中…" if resolving else "活力不足")
-	action_status_label.text = "状态：可行动" if can_roll else ("状态：处理中" if resolving else "状态：活力不足")
+	var effects: Dictionary = own_state.get("status_effects", {})
+	var effect_text: Array[String] = []
+	if int(effects.get("toll_free_charges", 0)) > 0: effect_text.append("🛡免租")
+	if bool(effects.get("reverse_next_move", false)): effect_text.append("↩反向")
+	if int(effects.get("speed_bonus_next_move", 0)) > 0: effect_text.append("👟+%d" % int(effects["speed_bonus_next_move"]))
+	action_status_label.text = ("状态：可行动" if can_roll else ("状态：处理中" if resolving else "状态：活力不足")) + ("  " + " ".join(effect_text) if not effect_text.is_empty() else "")
+	_update_mailbox(notifications)
+
+func play_dice_roll(final_roll: int, duration: float) -> void:
+	dice_label.visible = true
+	dice_label.modulate.a = 1.0
+	var cycles := 10
+	for index in range(cycles):
+		dice_label.text = "🎲 %d" % ((index % 6) + 1)
+		await get_tree().create_timer(duration / float(cycles + 1)).timeout
+	dice_label.text = "🎲 %d" % final_roll
+	var tween := dice_label.create_tween()
+	tween.tween_interval(0.45)
+	tween.tween_property(dice_label, "modulate:a", 0.0, 0.25)
+	tween.tween_callback(func() -> void: dice_label.visible = false)
+
+func play_card_effect(card_id: String) -> void:
+	var glyphs := {GameRules.CARD_TOLL_FREE: "🛡", GameRules.CARD_SPEED: "👟", GameRules.CARD_REVERSE: "↩", GameRules.CARD_BUILD: "🏠", GameRules.CARD_DEMOLISH: "💥", GameRules.CARD_EQUALIZE: "⚖"}
+	if not glyphs.has(card_id):
+		return
+	dice_label.text = String(glyphs[card_id])
+	dice_label.visible = true
+	dice_label.modulate = Color.WHITE
+	dice_label.scale = Vector2(0.4, 0.4)
+	var tween := dice_label.create_tween()
+	tween.tween_property(dice_label, "scale", Vector2(1.25, 1.25), 0.18)
+	tween.tween_property(dice_label, "scale", Vector2.ONE, 0.22)
+	tween.tween_property(dice_label, "modulate:a", 0.0, 0.4)
+	tween.tween_callback(func() -> void: dice_label.visible = false)
 
 func show_property_prompt(action: Dictionary) -> void:
 	skip_button.visible = true
@@ -189,7 +224,10 @@ func _populate_card_list(shop_mode: bool) -> void:
 	for card_id in GameRules.CARD_IDS:
 		var button := Button.new()
 		var count := int(_latest_inventory.get(card_id, 0))
-		button.text = "%s  %s" % [String(GameRules.CARD_NAMES[card_id]), ("%d 金币" % GameRules.card_price(card_id)) if shop_mode else ("×%d" % count)]
+		button.custom_minimum_size = Vector2(145, 115)
+		button.text = "%s\n%s" % [_card_icon(card_id), ("%d 金币" % GameRules.card_price(card_id)) if shop_mode else ("×%d" % count)]
+		button.tooltip_text = String(GameRules.CARD_NAMES[card_id])
+		button.add_theme_font_size_override("font_size", 30)
 		button.disabled = not shop_mode and count <= 0
 		if shop_mode:
 			button.pressed.connect(func() -> void: shop_card_requested.emit(card_id))
@@ -198,6 +236,9 @@ func _populate_card_list(shop_mode: bool) -> void:
 				card_use_requested.emit(card_id, int(target_selector.value))
 				card_overlay.visible = false)
 		card_list.add_child(button)
+
+func _card_icon(card_id: String) -> String:
+	return {GameRules.CARD_REMOTE_DICE: "🎲", GameRules.CARD_BUILD: "🏠", GameRules.CARD_DEMOLISH: "💥", GameRules.CARD_FORCE_BUY: "⚑", GameRules.CARD_TOLL_FREE: "🛡", GameRules.CARD_REVERSE: "↩", GameRules.CARD_SPEED: "👟", GameRules.CARD_EQUALIZE: "⚖"}.get(card_id, "✦")
 
 func _build_card_and_toast_ui() -> void:
 	card_button = Button.new()
@@ -211,6 +252,25 @@ func _build_card_and_toast_ui() -> void:
 	toast_container.set_anchors_preset(Control.PRESET_CENTER_TOP)
 	toast_container.offset_left = -350; toast_container.offset_top = 40; toast_container.offset_right = 350; toast_container.offset_bottom = 220
 	add_child(toast_container)
+	dice_label = Label.new()
+	dice_label.set_anchors_preset(Control.PRESET_CENTER)
+	dice_label.offset_left = -130; dice_label.offset_top = -100; dice_label.offset_right = 130; dice_label.offset_bottom = 100
+	dice_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	dice_label.add_theme_font_size_override("font_size", 72)
+	dice_label.visible = false
+	add_child(dice_label)
+	mailbox_button = Button.new()
+	mailbox_button.text = "✉ 0"
+	mailbox_button.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	mailbox_button.offset_left = -190; mailbox_button.offset_top = 32; mailbox_button.offset_right = -32; mailbox_button.offset_bottom = 92
+	mailbox_button.add_theme_font_size_override("font_size", 26)
+	mailbox_button.pressed.connect(_toggle_mailbox)
+	hud.add_child(mailbox_button)
+	mailbox_overlay = PanelContainer.new()
+	mailbox_overlay.set_anchors_preset(Control.PRESET_CENTER_RIGHT)
+	mailbox_overlay.offset_left = -620; mailbox_overlay.offset_top = -310; mailbox_overlay.offset_right = -28; mailbox_overlay.offset_bottom = 310
+	mailbox_list = VBoxContainer.new(); mailbox_overlay.add_child(mailbox_list)
+	mailbox_overlay.visible = false; add_child(mailbox_overlay)
 	card_overlay = PanelContainer.new()
 	card_overlay.set_anchors_preset(Control.PRESET_CENTER)
 	card_overlay.offset_left = -350; card_overlay.offset_top = -320; card_overlay.offset_right = 350; card_overlay.offset_bottom = 320
@@ -219,7 +279,7 @@ func _build_card_and_toast_ui() -> void:
 	card_title = Label.new(); card_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; card_title.add_theme_font_size_override("font_size", 36); content.add_child(card_title)
 	card_coins = Label.new(); card_coins.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; card_coins.add_theme_font_size_override("font_size", 22); content.add_child(card_coins)
 	target_selector = SpinBox.new(); target_selector.min_value = 1; target_selector.max_value = 29; target_selector.value = 1; content.add_child(target_selector)
-	card_list = VBoxContainer.new(); content.add_child(card_list)
+	card_list = GridContainer.new(); card_list.columns = 4; content.add_child(card_list)
 	card_close_button = Button.new(); content.add_child(card_close_button)
 	card_close_button.pressed.connect(func() -> void:
 		var was_shop := card_title.text == "卡牌商店"
@@ -227,6 +287,26 @@ func _build_card_and_toast_ui() -> void:
 		if was_shop: shop_closed.emit())
 	card_overlay.visible = false
 	add_child(card_overlay)
+
+func _update_mailbox(notifications: Array) -> void:
+	for event in notifications:
+		var event_id := int(event.get("event_id", 0))
+		if not _known_notification_ids.has(event_id):
+			_known_notification_ids[event_id] = true
+			unread_count += 1
+	mailbox_button.text = "✉ %d" % unread_count
+	for child in mailbox_list.get_children(): child.queue_free()
+	for event in notifications:
+		var label := Label.new()
+		label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		label.text = "%s  %s" % [String(event.get("time", "")), String(event.get("message", ""))]
+		mailbox_list.add_child(label)
+
+func _toggle_mailbox() -> void:
+	mailbox_overlay.visible = not mailbox_overlay.visible
+	if mailbox_overlay.visible:
+		unread_count = 0
+		mailbox_button.text = "✉ 0"
 
 func show_wheel_ready(action_player_id: int, can_start: bool) -> void:
 	wheel_overlay.show_ready(action_player_id, can_start)
