@@ -25,12 +25,15 @@ func place_at_cell(cell_index: int, board: BoardPath) -> void:
 
 
 func move_steps(step_count: int, board: BoardPath) -> void:
+	move_steps_direction(step_count, 1, board)
+
+func move_steps_direction(step_count: int, direction: int, board: BoardPath) -> void:
 	if is_moving or step_count <= 0:
 		return
 
 	is_moving = true
 	for _step in range(step_count):
-		var next_cell := (current_cell_index + 1) % board.get_cell_count()
+		var next_cell := posmod(current_cell_index + signi(direction), board.get_cell_count())
 		await _move_smoothly_to(board.get_cell_position(next_cell) + _player_offset())
 		current_cell_index = next_cell
 		step_reached.emit(current_cell_index)
@@ -82,4 +85,4 @@ func _draw() -> void:
 	draw_string(font, Vector2(-size.x * 0.5, size.y * 0.32), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 22, Color.WHITE)
 
 func _player_offset() -> Vector2:
-	return Vector2(-42.0, 0.0) if player_id == 1 else Vector2(42.0, 0.0)
+	return Vector2.RIGHT.rotated(float(player_id - 1) * TAU / 6.0) * 48.0

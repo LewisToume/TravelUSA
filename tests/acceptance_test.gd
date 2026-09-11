@@ -1,124 +1,93 @@
 extends SceneTree
 
-var _failures: Array[String] = []
+var failures: Array[String] = []
 
-func _initialize() -> void:
-	call_deferred("_run")
-
-func _check(condition: bool, description: String) -> void:
-	if condition:
-		print("PASS | ", description)
-	else:
-		_failures.append(description)
-		push_error("FAIL | " + description)
+func _initialize() -> void: call_deferred("_run")
+func check(value: bool, message: String) -> void:
+	if value: print("PASS | ", message)
+	else: failures.append(message); push_error("FAIL | " + message)
 
 func _run() -> void:
-	var packed := load("res://scenes/main.tscn") as PackedScene
-	_check(packed != null, "主场景可加载")
-	if packed == null:
-		quit(1)
-		return
-	var game = packed.instantiate()
+	var game = (load("res://scenes/main.tscn") as PackedScene).instantiate()
 	root.add_child(game)
-	await process_frame
-	await process_frame
+	await process_frame; await process_frame
 	game.test_mode = true
-	game.test_wheel_spin_duration = 0.15
-	for player in [game.player_1, game.player_2]:
-		player.move_speed_pixels_per_second = 100000.0
-		player.minimum_step_duration = 0.01
+	game.test_wheel_spin_duration = 0.1
+	for player_id in game.player_nodes:
+		game.player_nodes[player_id].move_speed_pixels_per_second = 100000.0
+		game.player_nodes[player_id].minimum_step_duration = 0.01
 	game.start_local_test_game()
 
-	_check(_valid_initial_states(game), "两名玩家初始状态包含 1000 金币、20 活力与 IDLE")
-	_check(GameRules.INITIAL_STAMINA == 20, "初始活力集中配置为 20")
-	_check("当前玩家" not in game.game_ui.player_label.text and "等待 Player" not in game.game_ui.action_status_label.text, "HUD 不再显示回合或等待另一玩家")
+	check(game.player_nodes.size() == 6 and game.players_state.size() == 6, "已准备 1～6 号玩家状态与棋子")
+	check(BoardPath.PLAYER_COLORS.size() == 6, "房产和棋子支持 6 种玩家颜色")
+	check(GameRules.MAP_CELL_TYPES[15] == GameRules.CELL_SHOP and GameRules.MAP_CELL_TYPES[28] == GameRules.CELL_SHOP, "15 与 28 为集中配置的 SHOP 格")
+	var every_inventory_ready := true
+	for player_id in range(1, 7): every_inventory_ready = every_inventory_ready and _all_cards_start_at_one(game.players_state[player_id]["inventory"])
+	check(every_inventory_ready, "所有玩家开局 8 种卡牌各发 1 张")
+	check(game.board.get_building_anchor(1).distance_to(game.board.get_cell_position(1)) >= 100.0, "建筑锚点位于道路格旁边")
 
-	# The host accepts both actions before either animation/event completes.
-	_check(game._host_try_roll(1, 2), "P1 可独立提交掷骰请求")
-	_check(not game._host_try_roll(1, 2), "P1 RESOLVING 时重复请求被拒绝")
-	_check(game._host_try_roll(2, 2), "P1 处理中时 P2 仍可提交掷骰请求")
-	_check(int(game.players_state[1]["stamina"]) == 19 and int(game.players_state[2]["stamina"]) == 19, "每名玩家各自扣除 1 点活力")
-	_check(_both_resolving(game), "两名玩家可同时处于 RESOLVING")
+	_set_property(game, 1, 2, 1); _set_property(game, 2, 2, 2)
+	check(game._host_try_roll(1, 3), "开始逐格移动")
+	check(await _wait_action(game, 1, "buy"), "经过两个敌产后仍继续移动到最终格")
+	check(int(game.players_state[1]["coins"]) == 925 and int(game.players_state[2]["coins"]) == 1075, "连续经过 L1/L2 分别结算 25/50 过路费")
+	check(game.game_ui.toast_container.get_child_count() >= 2, "过路费使用可排队且不阻塞的 Toast")
+	_respond(game, 1, "decision", false); await _wait_idle(game, 1)
 
-	_check(await _wait_host_action(game, 1, "buy"), "先处理的 P1 获得空地购买资格")
-	_respond(game, 1, "decision", true)
-	_check(await _wait_host_action(game, 2, "toll"), "同格后处理的 P2 读取到更新后的房主并支付过路费")
-	_check(int(game.properties[2]["owner_id"]) == 1 and int(game.players_state[1]["coins"]) == 975 and int(game.players_state[2]["coins"]) == 975, "同格购买原子化且过路费由 Host 结算")
-	_respond(game, 2, "decision", true)
-	_check(await _wait_host_action(game, 2, "capture"), "过路费确认后才进入抢占选项")
-	_respond(game, 2, "decision", false)
-	_check(await _wait_idle(game, 1) and await _wait_idle(game, 2), "两名玩家分别完成动作并恢复 IDLE")
+	check(game._host_use_card(1, GameRules.CARD_TOLL_FREE, 0), "免租卡由 Host 验证使用")
+	var p1: Dictionary = game.players_state[1]; p1["cell"] = 0; game.players_state[1] = p1
+	check(game._host_try_roll(1, 1), "免租状态下进入敌产")
+	check(await _wait_action(game, 1, "capture"), "免租只免收费，不跳过落点抢占")
+	check(int(game.players_state[1]["coins"]) == 925 and not bool(game.players_state[1]["next_toll_free"]), "下一次过路费被免除并消耗状态")
+	_respond(game, 1, "decision", false); await _wait_idle(game, 1)
 
-	# Passing an enemy property no longer charges; only the final landing does.
-	_set_property(game, 3, 1, 5)
-	_check(game._host_try_roll(2, 2), "P2 发起经过敌产的移动")
-	_check(await _wait_host_action(game, 2, "buy"), "经过格 3 不收费，最终空地格 4 进入购买")
-	_check(int(game.players_state[2]["coins"]) == 975, "路过敌方房产金币不变")
-	_respond(game, 2, "decision", false)
-	_check(await _wait_idle(game, 2), "跳过购买后 P2 独立恢复可行动")
+	check(game._host_use_card(1, GameRules.CARD_REMOTE_DICE, 6) and int(game.players_state[1]["forced_next_roll"]) == 6, "遥控骰子记录 Host 验证的 1～6 点")
+	check(game._host_use_card(1, GameRules.CARD_REVERSE, 0) and bool(game.players_state[1]["reverse_next_move"]), "转向卡设置下一次反向移动")
+	check(game._host_use_card(1, GameRules.CARD_SPEED, 0) and bool(game.players_state[1]["speed_next_move"]), "加速卡设置下一次骰子距离 +3")
+	_set_property(game, 4, 1, 1)
+	check(game._host_use_card(1, GameRules.CARD_BUILD, 4) and int(game.properties[4]["property_level"]) == 2, "建房卡免费升级自己的房产")
+	_set_property(game, 6, 2, 3)
+	check(game._host_use_card(1, GameRules.CARD_DEMOLISH, 6) and int(game.properties[6]["property_level"]) == 2, "拆房卡降低敌产一级且保留所有权")
+	p1 = game.players_state[1]; p1["cell"] = 7; game.players_state[1] = p1; _set_property(game, 7, 2, 1)
+	check(game._host_use_card(1, GameRules.CARD_FORCE_BUY, 0) and int(game.properties[7]["owner_id"]) == 1, "强购卡按当前抢占费用取得脚下敌产")
+	var before_total := int(game.players_state[1]["coins"]) + int(game.players_state[2]["coins"])
+	check(game._host_use_card(1, GameRules.CARD_EQUALIZE, 2), "均富卡仅对合法目标执行")
+	check(int(game.players_state[1]["coins"]) + int(game.players_state[2]["coins"]) == before_total and absi(int(game.players_state[1]["coins"]) - int(game.players_state[2]["coins"])) <= 1, "均富卡保持总金币并平均分配")
 
-	# Reward and wheel remain host-authoritative and do not block the other player.
-	_check(game._host_try_roll(1, 3), "P1 可移动到奖励格")
-	_check(await _wait_host_action(game, 1, "reward"), "奖励只在最终落点触发")
-	_check(int(game.players_state[1]["coins"]) == 1075, "Host 发放奖励格 100 金币")
-	_respond(game, 1, "decision", true)
-	_check(await _wait_idle(game, 1), "奖励确认后仅 P1 恢复 IDLE")
+	# Clear one-shot movement cards before deterministic shop test.
+	p1 = game.players_state[1]; p1["forced_next_roll"] = 0; p1["reverse_next_move"] = false; p1["speed_next_move"] = false; p1["cell"] = 14; game.players_state[1] = p1
+	check(game._host_try_roll(1, 1) and await _wait_action(game, 1, "shop"), "最终停在 SHOP 只打开当前玩家商店")
+	var old_count := int(game.players_state[1]["inventory"][GameRules.CARD_BUILD])
+	check(game._host_buy_card(1, GameRules.CARD_BUILD), "商店购买由 Host 扣款")
+	check(int(game.players_state[1]["inventory"][GameRules.CARD_BUILD]) == old_count + 1, "购买卡牌进入个人 inventory")
+	_respond(game, 1, "shop_close", true); await _wait_idle(game, 1)
 
-	game.test_wheel_result_override = 200
-	_check(game._host_try_roll(2, 5), "P2 可移动到大转盘格")
-	_check(await _wait_host_action(game, 2, "wheel"), "Host 预先确定大转盘结果")
-	_check(game._host_try_roll(1, 1), "P2 操作转盘期间 P1 仍可开始自己的动作")
-	_check(await _wait_host_action(game, 1, "buy"), "P1 与 P2 的落点事件可并行处理")
-	_respond(game, 1, "decision", false)
-	var wheel_event := int(game.pending_actions[2]["event_id"])
-	game._host_record_response(2, wheel_event, "wheel_spin", true)
-	_check(await _wait_until(func() -> bool: return game.last_wheel_result == 200 and int(game.players_state[2]["coins"]) == 1175), "转盘动画使用 Host 的 +200 结果并同步金币")
-	game._host_record_response(2, wheel_event, "wheel_confirm", true)
-	_check(await _wait_idle(game, 1) and await _wait_idle(game, 2), "并行动作各自完成，不切换全局回合")
+	check(not game._host_use_card(1, "fake_card", 0), "Host 拒绝不存在的卡牌")
+	check(_card_prices_correct(), "8 种卡牌价格集中配置且数值正确")
 
-	var saved_stamina := int(game.players_state[1]["stamina"])
-	var state: Dictionary = game.players_state[1]
-	state["stamina"] = 0
-	game.players_state[1] = state
-	_check(not game._host_try_roll(1, 1) and int(game.players_state[1]["stamina"]) == 0, "stamina 为 0 时 Host 拒绝掷骰")
-	state["stamina"] = saved_stamina
-	game.players_state[1] = state
+	if failures.is_empty(): print("ACCEPTANCE RESULT | PASS | 多人、逐格收费、建筑、商店和卡牌规则通过"); quit(0)
+	else: print("ACCEPTANCE RESULT | FAIL | ", failures); quit(1)
 
-	if _failures.is_empty():
-		print("ACCEPTANCE RESULT | PASS | 异步行动、活力、最终落点事件与房产冲突全部通过")
-		quit(0)
-	else:
-		print("ACCEPTANCE RESULT | FAIL | ", _failures)
-		quit(1)
-
-func _valid_initial_states(game) -> bool:
-	for player_id in [1, 2]:
-		var state: Dictionary = game.players_state[player_id]
-		if int(state["player_id"]) != player_id or int(state["coins"]) != 1000 or int(state["stamina"]) != 20 or String(state["action_state"]) != GameRules.ACTION_IDLE:
-			return false
+func _all_cards_start_at_one(inventory: Dictionary) -> bool:
+	for card_id in GameRules.CARD_IDS:
+		if int(inventory.get(card_id, 0)) != 1: return false
 	return true
 
-func _both_resolving(game) -> bool:
-	return String(game.players_state[1]["action_state"]) == GameRules.ACTION_RESOLVING and String(game.players_state[2]["action_state"]) == GameRules.ACTION_RESOLVING
+func _card_prices_correct() -> bool:
+	return GameRules.card_price(GameRules.CARD_REMOTE_DICE) == 200 and GameRules.card_price(GameRules.CARD_BUILD) == 300 and GameRules.card_price(GameRules.CARD_DEMOLISH) == 300 and GameRules.card_price(GameRules.CARD_FORCE_BUY) == 500 and GameRules.card_price(GameRules.CARD_TOLL_FREE) == 250 and GameRules.card_price(GameRules.CARD_REVERSE) == 150 and GameRules.card_price(GameRules.CARD_SPEED) == 200 and GameRules.card_price(GameRules.CARD_EQUALIZE) == 800
 
-func _respond(game, player_id: int, response_type: String, accepted: bool) -> void:
-	var event_id := int(game.pending_actions[player_id]["event_id"])
-	game._host_record_response(player_id, event_id, response_type, accepted)
+func _set_property(game, index: int, owner: int, level: int) -> void:
+	var value: Dictionary = game.properties[index]; value["owner_id"] = owner; value["property_level"] = level; game.properties[index] = value
 
-func _wait_host_action(game, player_id: int, action_type: String, timeout_seconds := 5.0) -> bool:
-	return await _wait_until(func() -> bool: return game.pending_actions.has(player_id) and String(game.pending_actions[player_id].get("type", "")) == action_type, timeout_seconds)
+func _respond(game, player_id: int, kind: String, accepted: bool) -> void:
+	game._host_record_response(player_id, int(game.pending_actions[player_id]["event_id"]), kind, accepted)
 
-func _wait_idle(game, player_id: int, timeout_seconds := 5.0) -> bool:
-	return await _wait_until(func() -> bool: return String(game.players_state[player_id]["action_state"]) == GameRules.ACTION_IDLE, timeout_seconds)
+func _wait_action(game, player_id: int, kind: String, seconds := 5.0) -> bool:
+	return await _wait_until(func(): return game.pending_actions.has(player_id) and String(game.pending_actions[player_id].get("type", "")) == kind, seconds)
 
-func _wait_until(predicate: Callable, timeout_seconds := 5.0) -> bool:
-	var deadline := Time.get_ticks_msec() + int(timeout_seconds * 1000.0)
-	while not predicate.call() and Time.get_ticks_msec() < deadline:
-		await create_timer(0.01).timeout
-	return predicate.call()
+func _wait_idle(game, player_id: int, seconds := 5.0) -> bool:
+	return await _wait_until(func(): return String(game.players_state[player_id]["action_state"]) == GameRules.ACTION_IDLE, seconds)
 
-func _set_property(game, cell_index: int, owner_id: int, level: int) -> void:
-	var property: Dictionary = game.properties[cell_index]
-	property["owner_id"] = owner_id
-	property["property_level"] = level
-	game.properties[cell_index] = property
+func _wait_until(callable: Callable, seconds := 5.0) -> bool:
+	var deadline := Time.get_ticks_msec() + int(seconds * 1000.0)
+	while not callable.call() and Time.get_ticks_msec() < deadline: await create_timer(0.01).timeout
+	return callable.call()

@@ -16,10 +16,10 @@ const GRID_COLOR := Color(0.16, 0.25, 0.31, 0.5)
 const ROAD_COLOR := Color("304a58")
 const ROAD_EDGE_COLOR := Color("6e98a8")
 const EMPTY_PROPERTY_COLOR := Color("aab6bb")
-const PLAYER_1_PROPERTY_COLOR := Color("55aee8")
-const PLAYER_2_PROPERTY_COLOR := Color("e879a9")
+const PLAYER_COLORS := [Color("55aee8"), Color("e879a9"), Color("f2994a"), Color("6fcf97"), Color("bb6bd9"), Color("56ccf2")]
 const REWARD_COLOR := Color("f2c94c")
 const WHEEL_COLOR := Color("9b72e8")
+const SHOP_COLOR := Color("f29d49")
 const START_COLOR := Color("65d394")
 const CELL_BORDER_COLOR := Color("18323e")
 
@@ -65,6 +65,16 @@ func get_cell_position(index: int) -> Vector2:
 func get_cell_count() -> int:
 	return _cell_positions.size()
 
+func get_building_anchor(index: int) -> Vector2:
+	var current := get_cell_position(index)
+	var previous := get_cell_position(index - 1)
+	var following := get_cell_position(index + 1)
+	var tangent := (following - previous).normalized()
+	var normal := Vector2(-tangent.y, tangent.x)
+	if normal.dot(current - _route_bounds.get_center()) < 0.0:
+		normal = -normal
+	return current + normal * (cell_size * 0.92)
+
 
 func get_route_bounds() -> Rect2:
 	return _route_bounds
@@ -103,10 +113,8 @@ func _draw() -> void:
 			fill_color = REWARD_COLOR
 		elif cell_type == GameRules.CELL_WHEEL:
 			fill_color = WHEEL_COLOR
-		elif owner_id == 1:
-			fill_color = PLAYER_1_PROPERTY_COLOR
-		elif owner_id == 2:
-			fill_color = PLAYER_2_PROPERTY_COLOR
+		elif cell_type == GameRules.CELL_SHOP:
+			fill_color = SHOP_COLOR
 		draw_rect(rect, fill_color, true)
 		draw_rect(rect, CELL_BORDER_COLOR, false, 6.0)
 		draw_string(font, rect.position + Vector2(10.0, 28.0), str(index), HORIZONTAL_ALIGNMENT_LEFT, -1, 21, CELL_BORDER_COLOR)
@@ -117,12 +125,34 @@ func _draw() -> void:
 			center_text = "转盘"
 		elif cell_type == GameRules.CELL_START:
 			center_text = "起点"
-		elif property_level > 0:
-			center_text = "L%d" % property_level
+		elif cell_type == GameRules.CELL_SHOP:
+			center_text = "商店"
 		if not center_text.is_empty():
 			var text_size := font.get_string_size(center_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size)
 			var baseline := center + Vector2(-text_size.x * 0.5, text_size.y * 0.32)
 			draw_string(font, baseline, center_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, CELL_BORDER_COLOR)
+		if cell_type == GameRules.CELL_PROPERTY and owner_id >= 1 and property_level >= 1:
+			_draw_building(get_building_anchor(index), owner_id, property_level)
+
+func _draw_building(anchor: Vector2, owner_id: int, level: int) -> void:
+	var color: Color = PLAYER_COLORS[posmod(owner_id - 1, PLAYER_COLORS.size())]
+	var width := 44.0 + float(level) * 9.0
+	var floor_height := 23.0
+	var floors := level if level <= 3 else level + 1
+	var height := floor_height * float(floors)
+	var body := Rect2(anchor + Vector2(-width * 0.5, -height), Vector2(width, height))
+	draw_rect(body, color, true)
+	draw_rect(body, CELL_BORDER_COLOR, false, 4.0)
+	if level <= 2:
+		var roof := PackedVector2Array([body.position + Vector2(-8, 0), body.position + Vector2(width * 0.5, -24), body.position + Vector2(width + 8, 0)])
+		draw_colored_polygon(roof, color.lightened(0.18))
+		draw_polyline(PackedVector2Array([roof[0], roof[1], roof[2]]), CELL_BORDER_COLOR, 4.0)
+	for floor_index in range(floors):
+		var y := body.end.y - 14.0 - floor_index * floor_height
+		draw_rect(Rect2(Vector2(anchor.x - width * 0.27, y - 7), Vector2(11, 13)), Color("d9f3ff"), true)
+		draw_rect(Rect2(Vector2(anchor.x + width * 0.10, y - 7), Vector2(11, 13)), Color("d9f3ff"), true)
+	var level_text := "L%d" % level
+	draw_string(ThemeDB.fallback_font, anchor + Vector2(-15, 22), level_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 20, color)
 
 
 func _draw_background_grid(rect: Rect2) -> void:

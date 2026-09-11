@@ -7,6 +7,9 @@ signal roll_requested
 signal property_action_requested(accepted: bool)
 signal wheel_spin_requested
 signal wheel_confirmation_requested
+signal shop_card_requested(card_id: String)
+signal shop_closed
+signal card_use_requested(card_id: String, target: int)
 
 @onready var startup_overlay: Control = $StartupOverlay
 @onready var lobby_status_label: Label = $StartupOverlay/Center/Panel/Content/LobbyStatus
@@ -28,8 +31,18 @@ signal wheel_confirmation_requested
 @onready var confirm_button: Button = $PropertyOverlay/Center/Panel/Content/Actions/ConfirmButton
 @onready var skip_button: Button = $PropertyOverlay/Center/Panel/Content/Actions/SkipButton
 @onready var wheel_overlay: WheelUI = $WheelOverlay
+var card_button: Button
+var card_overlay: PanelContainer
+var card_title: Label
+var card_coins: Label
+var card_list: VBoxContainer
+var target_selector: SpinBox
+var card_close_button: Button
+var toast_container: VBoxContainer
+var _latest_inventory: Dictionary = {}
 
 func _ready() -> void:
+	_build_card_and_toast_ui()
 	host_button.pressed.connect(func() -> void: host_requested.emit())
 	join_button.pressed.connect(func() -> void: join_requested.emit(address_input.text.strip_edges()))
 	roll_button.pressed.connect(func() -> void: roll_requested.emit())
@@ -57,14 +70,17 @@ func set_lobby_buttons_enabled(enabled: bool) -> void:
 	host_button.disabled = not enabled
 	join_button.disabled = not enabled
 
-func update_game_state(local_player_id: int, players: Dictionary, last_rolls: Dictionary) -> void:
+func update_game_state(local_player_id: int, players: Dictionary, active_player_ids: Array, last_rolls: Dictionary) -> void:
 	player_label.text = "Player %d" % local_player_id
 	var own_state: Dictionary = players.get(local_player_id, {})
 	coins_label.text = "自己的金币：%d" % int(own_state.get("coins", 0))
 	stamina_label.text = "自己的活力：%d" % int(own_state.get("stamina", 0))
-	var p1: Dictionary = players.get(1, {})
-	var p2: Dictionary = players.get(2, {})
-	all_players_label.text = "P1：%d 金币 / %d 活力  |  P2：%d 金币 / %d 活力" % [int(p1.get("coins", 0)), int(p1.get("stamina", 0)), int(p2.get("coins", 0)), int(p2.get("stamina", 0))]
+	var summaries: Array[String] = []
+	for player_id in active_player_ids:
+		var state: Dictionary = players.get(player_id, {})
+		summaries.append("P%d:%d金/%d活" % [player_id, int(state.get("coins", 0)), int(state.get("stamina", 0))])
+	all_players_label.text = "  |  ".join(summaries)
+	_latest_inventory = own_state.get("inventory", {}).duplicate(true)
 	cell_label.text = "当前位置：%d" % int(own_state.get("cell", 0))
 	var roll_value := int(last_rolls.get(local_player_id, 0))
 	roll_label.text = "骰子点数：%s" % (str(roll_value) if roll_value > 0 else "—")
@@ -131,6 +147,87 @@ func show_toll_prompt(action: Dictionary, local_player_id: int) -> void:
 	skip_button.visible = false
 	property_overlay.visible = true
 
+func show_toll_toast(action: Dictionary, local_player_id: int) -> void:
+	var payer_id := int(action["payer_id"])
+	var owner_id := int(action["owner_id"])
+	var level := int(action["property_level"])
+	var amount := int(action["amount"])
+	if local_player_id == payer_id:
+		show_toast("经过 Player %d 的 L%d 房产，支付 %d 金币" % [owner_id, level, amount])
+	else:
+		show_toast("Player %d 经过你的 L%d 房产，获得 %d 金币" % [payer_id, level, amount])
+
+func show_toast(message: String) -> void:
+	var label := Label.new()
+	label.text = message
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.add_theme_font_size_override("font_size", 24)
+	label.add_theme_color_override("font_color", Color.WHITE)
+	toast_container.add_child(label)
+	var tween := label.create_tween()
+	tween.tween_interval(1.5)
+	tween.tween_property(label, "modulate:a", 0.0, 0.35)
+	tween.tween_callback(label.queue_free)
+
+func show_shop(inventory: Dictionary, coins: int) -> void:
+	_latest_inventory = inventory.duplicate(true)
+	_populate_card_list(true)
+	card_title.text = "卡牌商店"
+	card_coins.text = "金币：%d" % coins
+	card_close_button.text = "离开商店"
+	card_overlay.visible = true
+
+func _show_inventory() -> void:
+	_populate_card_list(false)
+	card_title.text = "我的卡牌"
+	card_coins.text = "目标：玩家编号 / 格子编号 / 遥控骰子点数"
+	card_close_button.text = "关闭"
+	card_overlay.visible = true
+
+func _populate_card_list(shop_mode: bool) -> void:
+	for child in card_list.get_children(): child.queue_free()
+	for card_id in GameRules.CARD_IDS:
+		var button := Button.new()
+		var count := int(_latest_inventory.get(card_id, 0))
+		button.text = "%s  %s" % [String(GameRules.CARD_NAMES[card_id]), ("%d 金币" % GameRules.card_price(card_id)) if shop_mode else ("×%d" % count)]
+		button.disabled = not shop_mode and count <= 0
+		if shop_mode:
+			button.pressed.connect(func() -> void: shop_card_requested.emit(card_id))
+		else:
+			button.pressed.connect(func() -> void:
+				card_use_requested.emit(card_id, int(target_selector.value))
+				card_overlay.visible = false)
+		card_list.add_child(button)
+
+func _build_card_and_toast_ui() -> void:
+	card_button = Button.new()
+	card_button.text = "卡牌"
+	card_button.position = Vector2(32, 420)
+	card_button.size = Vector2(180, 64)
+	card_button.add_theme_font_size_override("font_size", 28)
+	card_button.pressed.connect(_show_inventory)
+	hud.add_child(card_button)
+	toast_container = VBoxContainer.new()
+	toast_container.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	toast_container.offset_left = -350; toast_container.offset_top = 40; toast_container.offset_right = 350; toast_container.offset_bottom = 220
+	add_child(toast_container)
+	card_overlay = PanelContainer.new()
+	card_overlay.set_anchors_preset(Control.PRESET_CENTER)
+	card_overlay.offset_left = -350; card_overlay.offset_top = -320; card_overlay.offset_right = 350; card_overlay.offset_bottom = 320
+	var content := VBoxContainer.new()
+	card_overlay.add_child(content)
+	card_title = Label.new(); card_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; card_title.add_theme_font_size_override("font_size", 36); content.add_child(card_title)
+	card_coins = Label.new(); card_coins.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; card_coins.add_theme_font_size_override("font_size", 22); content.add_child(card_coins)
+	target_selector = SpinBox.new(); target_selector.min_value = 1; target_selector.max_value = 29; target_selector.value = 1; content.add_child(target_selector)
+	card_list = VBoxContainer.new(); content.add_child(card_list)
+	card_close_button = Button.new(); content.add_child(card_close_button)
+	card_close_button.pressed.connect(func() -> void:
+		var was_shop := card_title.text == "卡牌商店"
+		card_overlay.visible = false
+		if was_shop: shop_closed.emit())
+	card_overlay.visible = false
+	add_child(card_overlay)
+
 func show_wheel_ready(action_player_id: int, can_start: bool) -> void:
 	wheel_overlay.show_ready(action_player_id, can_start)
 
@@ -146,3 +243,4 @@ func hide_property_prompt() -> void:
 func hide_all_prompts() -> void:
 	property_overlay.visible = false
 	wheel_overlay.hide_wheel()
+	card_overlay.visible = false

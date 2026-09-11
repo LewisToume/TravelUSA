@@ -14,6 +14,7 @@ signal action_finished(player_id: int)
 @onready var player_2: BoardPlayer = $Player2
 @onready var follow_camera: Camera2D = $TurnCamera
 @onready var game_ui: GameHUD = $GameUI
+const PLAYER_SCENE := preload("res://scenes/player.tscn")
 
 var is_host := false
 var local_player_id := 0
@@ -24,6 +25,8 @@ var last_rolls: Dictionary = {1: 0, 2: 0}
 var last_event: Dictionary = {}
 var last_wheel_result := 0
 var player_peer_ids: Dictionary = {1: 1}
+var active_player_ids: Array[int] = [1]
+var player_nodes: Dictionary = {}
 
 # Host-only state. RPCs run serially on Godot's main thread; per-cell queues keep
 # landing decisions atomic while unrelated players remain independent.
@@ -31,6 +34,7 @@ var pending_actions: Dictionary = {}
 var property_action_queues: Dictionary = {}
 var action_responses: Dictionary = {}
 var animation_done: Dictionary = {}
+var action_paid_final_toll: Dictionary = {}
 var next_action_id := 1
 var next_event_id := 1
 
@@ -44,7 +48,16 @@ var _random := RandomNumberGenerator.new()
 
 func _ready() -> void:
 	_random.randomize()
-	players_state = {1: GameRules.build_player_state(1), 2: GameRules.build_player_state(2)}
+	for player_id in range(1, 7):
+		players_state[player_id] = GameRules.build_player_state(player_id)
+	player_nodes = {1: player_1, 2: player_2}
+	for player_id in range(3, 7):
+		var player: BoardPlayer = PLAYER_SCENE.instantiate()
+		player.name = "Player%d" % player_id
+		player.player_id = player_id
+		player.player_color = BoardPath.PLAYER_COLORS[player_id - 1]
+		add_child(player)
+		player_nodes[player_id] = player
 	properties = GameRules.build_cells(board.get_cell_count())
 	board.set_property_states(properties)
 	player_1.place_at_cell(0, board)
@@ -55,6 +68,9 @@ func _ready() -> void:
 	game_ui.property_action_requested.connect(submit_property_action)
 	game_ui.wheel_spin_requested.connect(request_wheel_spin)
 	game_ui.wheel_confirmation_requested.connect(confirm_wheel_result)
+	game_ui.shop_card_requested.connect(request_buy_card)
+	game_ui.shop_closed.connect(close_shop)
+	game_ui.card_use_requested.connect(request_use_card)
 	multiplayer.peer_connected.connect(_on_peer_connected)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	multiplayer.connected_to_server.connect(_on_connected_to_server)
@@ -68,13 +84,14 @@ func _process(_delta: float) -> void:
 func host_game(port: int = -1) -> bool:
 	var server := ENetMultiplayerPeer.new()
 	var target_port := listen_port if port < 0 else port
-	var error := server.create_server(target_port, 1)
+	var error := server.create_server(target_port, 5)
 	if error != OK:
 		game_ui.set_lobby_status("Host 启动失败：%s" % error_string(error))
 		return false
 	multiplayer.multiplayer_peer = server
 	is_host = true
 	local_player_id = 1
+	active_player_ids = [1]
 	game_ui.set_lobby_buttons_enabled(false)
 	game_ui.set_lobby_status("Host 已创建，等待客户端连接（端口 %d）" % target_port)
 	return true
@@ -97,6 +114,7 @@ func start_local_test_game() -> void:
 	is_host = true
 	local_player_id = 1
 	game_is_started = true
+	active_player_ids = [1, 2]
 	_show_world()
 	_apply_snapshot(_make_snapshot())
 	game_started.emit()
@@ -148,6 +166,25 @@ func confirm_wheel_result() -> void:
 	else:
 		_request_action_response_rpc.rpc_id(1, event_id, "wheel_confirm", true)
 
+func request_buy_card(card_id: String) -> void:
+	if is_host:
+		_host_buy_card(local_player_id, card_id)
+	else:
+		_request_buy_card_rpc.rpc_id(1, card_id)
+
+func close_shop() -> void:
+	var event_id := int(pending_action.get("event_id", 0))
+	if is_host:
+		_host_record_response(local_player_id, event_id, "shop_close", true)
+	else:
+		_request_action_response_rpc.rpc_id(1, event_id, "shop_close", true)
+
+func request_use_card(card_id: String, target: int) -> void:
+	if is_host:
+		_host_use_card(local_player_id, card_id, target)
+	else:
+		_request_use_card_rpc.rpc_id(1, card_id, target)
+
 func _on_roll_requested() -> void:
 	if is_host:
 		_host_try_roll(local_player_id)
@@ -155,20 +192,28 @@ func _on_roll_requested() -> void:
 		_request_roll_rpc.rpc_id(1)
 
 func _on_peer_connected(peer_id: int) -> void:
-	if not is_host or game_is_started:
+	if not is_host:
 		return
-	player_peer_ids[2] = peer_id
+	var assigned_id := _next_available_player_id()
+	if assigned_id < 0:
+		return
+	player_peer_ids[assigned_id] = peer_id
+	if assigned_id not in active_player_ids:
+		active_player_ids.append(assigned_id)
 	game_is_started = true
-	_assign_local_player.rpc_id(peer_id, 2)
+	_assign_local_player.rpc_id(peer_id, assigned_id)
 	_show_world()
 	_sync_state.rpc(_make_snapshot())
 	game_started.emit()
 
 func _on_peer_disconnected(peer_id: int) -> void:
-	if is_host and player_peer_ids.get(2, 0) == peer_id:
-		game_is_started = false
-		game_ui.show_startup()
-		game_ui.set_lobby_status("Player 2 已断开，请重新启动本局")
+	if not is_host:
+		return
+	var player_id := _player_id_for_peer(peer_id)
+	if player_id > 1:
+		player_peer_ids.erase(player_id)
+		active_player_ids.erase(player_id)
+		_broadcast_state()
 
 func _on_connected_to_server() -> void:
 	game_ui.set_lobby_status("已连接，等待 Host 同步游戏…")
@@ -191,10 +236,14 @@ func _sync_state(snapshot: Dictionary) -> void:
 	_apply_snapshot(snapshot)
 
 @rpc("authority", "call_local", "reliable")
-func _animate_action(player_id: int, action_id: int, start_cell: int, roll_value: int, target_cell: int) -> void:
+func _animate_action(player_id: int, action_id: int, start_cell: int, move_distance: int, direction: int, target_cell: int) -> void:
 	var player := _player_node(player_id)
 	player.place_at_cell(start_cell, board)
-	player.move_steps(roll_value, board)
+	player.move_steps_direction(move_distance, direction, board)
+	for _step in range(move_distance):
+		var reached_cell: int = await player.step_reached
+		if is_host and _settle_step_toll(player_id, reached_cell) and reached_cell == target_cell:
+			action_paid_final_toll[action_id] = true
 	await player.movement_finished
 	player.place_at_cell(target_cell, board)
 	animation_done[action_id] = true
@@ -205,31 +254,37 @@ func _show_property_prompt_remote(action: Dictionary) -> void:
 	_show_local_property_prompt(action)
 
 @rpc("authority", "call_local", "reliable")
-func _show_toll_prompt_remote(action: Dictionary) -> void:
-	displayed_event_id = int(action["event_id"])
-	if local_player_id == int(action["payer_id"]):
-		pending_action = action.duplicate(true)
-	game_ui.show_toll_prompt(action, local_player_id)
-	if local_player_id == int(action["payer_id"]):
-		property_prompted.emit(action)
+func _show_toll_toast_remote(action: Dictionary) -> void:
+	if local_player_id == int(action["payer_id"]) or local_player_id == int(action["owner_id"]):
+		game_ui.show_toll_toast(action, local_player_id)
 
-@rpc("authority", "call_local", "reliable")
+@rpc("authority", "call_remote", "reliable")
 func _show_wheel_ready_remote(action: Dictionary) -> void:
 	displayed_event_id = int(action["event_id"])
 	if local_player_id == int(action["player_id"]):
 		pending_action = action.duplicate(true)
 	game_ui.show_wheel_ready(int(action["player_id"]), local_player_id == int(action["player_id"]))
 
-@rpc("authority", "call_local", "reliable")
+@rpc("authority", "call_remote", "reliable")
 func _spin_wheel_remote(result: int, duration: float) -> void:
 	game_ui.play_wheel_spin(result, duration)
 
-@rpc("authority", "call_local", "reliable")
+@rpc("authority", "call_remote", "reliable")
 func _show_wheel_result_remote(action: Dictionary) -> void:
 	displayed_event_id = int(action["event_id"])
 	if local_player_id == int(action["player_id"]):
 		pending_action = action.duplicate(true)
 	game_ui.show_wheel_result(int(action["amount"]), local_player_id == int(action["player_id"]), int(action["player_id"]))
+
+@rpc("authority", "call_remote", "reliable")
+func _show_shop_remote(action: Dictionary, inventory: Dictionary, coins: int) -> void:
+	pending_action = action.duplicate(true)
+	displayed_event_id = int(action["event_id"])
+	game_ui.show_shop(inventory, coins)
+
+@rpc("authority", "call_local", "reliable")
+func _show_toast_remote(message: String) -> void:
+	game_ui.show_toast(message)
 
 @rpc("authority", "call_local", "reliable")
 func _hide_prompt_remote(event_id: int) -> void:
@@ -254,16 +309,33 @@ func _request_action_response_rpc(event_id: int, response_type: String, accepted
 	if is_host:
 		_host_record_response(_player_id_for_peer(multiplayer.get_remote_sender_id()), event_id, response_type, accepted)
 
+@rpc("any_peer", "call_remote", "reliable")
+func _request_buy_card_rpc(card_id: String) -> void:
+	if is_host:
+		_host_buy_card(_player_id_for_peer(multiplayer.get_remote_sender_id()), card_id)
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_use_card_rpc(card_id: String, target: int) -> void:
+	if is_host:
+		_host_use_card(_player_id_for_peer(multiplayer.get_remote_sender_id()), card_id, target)
+
 func _host_try_roll(requesting_player_id: int, forced_roll: int = -1) -> bool:
 	if not is_host or not game_is_started or not can_player_roll(requesting_player_id):
 		return false
 	var roll := generate_roll() if forced_roll < 0 else forced_roll
+	var state: Dictionary = players_state[requesting_player_id]
+	if int(state.get("forced_next_roll", 0)) > 0:
+		roll = int(state["forced_next_roll"])
+		state["forced_next_roll"] = 0
 	if not test_mode:
 		roll = clampi(roll, dice_min_value, dice_max_value)
 	roll = maxi(1, roll)
-	var state: Dictionary = players_state[requesting_player_id]
+	var direction := -1 if bool(state.get("reverse_next_move", false)) else 1
+	var move_distance := roll + (3 if bool(state.get("speed_next_move", false)) else 0)
+	state["reverse_next_move"] = false
+	state["speed_next_move"] = false
 	var start_cell := int(state["cell"])
-	var target_cell := posmod(start_cell + roll, board.get_cell_count())
+	var target_cell := posmod(start_cell + direction * move_distance, board.get_cell_count())
 	var action_id := next_action_id
 	next_action_id += 1
 	state["stamina"] = int(state["stamina"]) - 1
@@ -276,9 +348,9 @@ func _host_try_roll(requesting_player_id: int, forced_roll: int = -1) -> bool:
 			property_action_queues[target_cell] = []
 		property_action_queues[target_cell].append(action_id)
 	if multiplayer.has_multiplayer_peer():
-		_animate_action.rpc(requesting_player_id, action_id, start_cell, roll, target_cell)
+		_animate_action.rpc(requesting_player_id, action_id, start_cell, move_distance, direction, target_cell)
 	else:
-		_animate_action(requesting_player_id, action_id, start_cell, roll, target_cell)
+		_animate_action(requesting_player_id, action_id, start_cell, move_distance, direction, target_cell)
 	_broadcast_state()
 	_resolve_landing(requesting_player_id, action_id, target_cell)
 	return true
@@ -290,12 +362,15 @@ func _resolve_landing(player_id: int, action_id: int, cell_index: int) -> void:
 	var cell_type := String(properties[cell_index]["cell_type"])
 	if cell_type == GameRules.CELL_PROPERTY:
 		await _wait_for_property_queue(cell_index, action_id)
-		await _resolve_property_landing(player_id, cell_index)
+		await _resolve_property_landing(player_id, cell_index, bool(action_paid_final_toll.get(action_id, false)))
+		action_paid_final_toll.erase(action_id)
 		_release_property_queue(cell_index, action_id)
 	elif cell_type == GameRules.CELL_REWARD:
 		await _resolve_reward(player_id, cell_index)
 	elif cell_type == GameRules.CELL_WHEEL:
 		await _resolve_wheel(player_id, cell_index)
+	elif cell_type == GameRules.CELL_SHOP:
+		await _resolve_shop(player_id, cell_index)
 	_finish_player_action(player_id)
 
 func _wait_for_property_queue(cell_index: int, action_id: int) -> void:
@@ -313,41 +388,47 @@ func _release_property_queue(cell_index: int, action_id: int) -> void:
 	else:
 		property_action_queues[cell_index] = queue
 
-func _resolve_property_landing(player_id: int, cell_index: int) -> void:
+func _resolve_property_landing(player_id: int, cell_index: int, final_toll_paid: bool) -> void:
 	var property: Dictionary = properties[cell_index]
-	var owner_id := int(property["owner_id"])
-	if owner_id != -1 and owner_id != player_id:
-		await _resolve_toll(player_id, cell_index)
+	if not final_toll_paid and int(property["owner_id"]) not in [-1, player_id]:
+		_settle_step_toll(player_id, cell_index)
 	var action := _build_property_action(player_id, cell_index)
 	if action.is_empty():
 		return
 	var accepted: bool = await _request_player_decision(player_id, action)
-	if accepted and bool(action.get("can_afford", false)):
-		_apply_property_action(player_id, action)
+	if accepted:
+		var current_action := _build_property_action(player_id, cell_index)
+		if String(current_action.get("type", "")) == String(action.get("type", "")) and bool(current_action.get("can_afford", false)):
+			_apply_property_action(player_id, current_action)
 		_broadcast_state()
 
-func _resolve_toll(player_id: int, cell_index: int) -> void:
+func _settle_step_toll(player_id: int, cell_index: int) -> bool:
 	var property: Dictionary = properties[cell_index]
+	if String(property["cell_type"]) != GameRules.CELL_PROPERTY:
+		return false
 	var owner_id := int(property["owner_id"])
 	var amount := GameRules.toll_fee(int(property["property_level"]))
 	if owner_id == -1 or owner_id == player_id or amount <= 0:
-		return
+		return false
 	var payer: Dictionary = players_state[player_id]
+	if bool(payer.get("next_toll_free", false)):
+		payer["next_toll_free"] = false
+		players_state[player_id] = payer
+		_broadcast_toast("Player %d 使用免租卡，免除 %d 金币过路费" % [player_id, amount])
+		_broadcast_state()
+		return true
 	var owner: Dictionary = players_state[owner_id]
 	payer["coins"] = int(payer["coins"]) - amount
 	owner["coins"] = int(owner["coins"]) + amount
 	players_state[player_id] = payer
 	players_state[owner_id] = owner
 	var action := {"type": "toll", "payer_id": player_id, "owner_id": owner_id, "cell_index": cell_index, "property_level": int(property["property_level"]), "amount": amount}
-	_assign_event_id(action)
-	pending_actions[player_id] = action
 	_broadcast_state()
 	if multiplayer.has_multiplayer_peer():
-		_show_toll_prompt_remote.rpc(action)
+		_show_toll_toast_remote.rpc(action)
 	else:
-		_show_toll_prompt_remote(action)
-	await _await_response(player_id, int(action["event_id"]), "decision")
-	_close_event(player_id, int(action["event_id"]))
+		_show_toll_toast_remote(action)
+	return true
 
 func _resolve_reward(player_id: int, cell_index: int) -> void:
 	var state: Dictionary = players_state[player_id]
@@ -364,28 +445,162 @@ func _resolve_wheel(player_id: int, cell_index: int) -> void:
 	_assign_event_id(action)
 	pending_actions[player_id] = action
 	_broadcast_state()
-	if multiplayer.has_multiplayer_peer():
-		_show_wheel_ready_remote.rpc(action)
-	else:
-		_show_wheel_ready_remote(action)
+	_send_wheel_ready(player_id, action)
 	await _await_response(player_id, int(action["event_id"]), "wheel_spin")
 	var duration := test_wheel_spin_duration if test_mode and test_wheel_spin_duration > 0.0 else GameRules.WHEEL_SPIN_DURATION
-	if multiplayer.has_multiplayer_peer():
-		_spin_wheel_remote.rpc(result, duration)
-	else:
-		_spin_wheel_remote(result, duration)
+	_send_wheel_spin(player_id, result, duration)
 	await get_tree().create_timer(duration).timeout
 	var state: Dictionary = players_state[player_id]
 	state["coins"] = int(state["coins"]) + result
 	players_state[player_id] = state
 	last_event = action.duplicate(true)
 	_broadcast_state()
-	if multiplayer.has_multiplayer_peer():
-		_show_wheel_result_remote.rpc(action)
-	else:
-		_show_wheel_result_remote(action)
+	_send_wheel_result(player_id, action)
+	_broadcast_toast("Player %d 转盘%s %d 金币" % [player_id, "获得" if result >= 0 else "损失", absi(result)], player_id)
 	await _await_response(player_id, int(action["event_id"]), "wheel_confirm")
 	_close_event(player_id, int(action["event_id"]))
+
+func _send_wheel_ready(player_id: int, action: Dictionary) -> void:
+	var peer_id := int(player_peer_ids.get(player_id, 1))
+	if peer_id == 1:
+		_show_wheel_ready_remote(action)
+	else:
+		_show_wheel_ready_remote.rpc_id(peer_id, action)
+
+func _send_wheel_spin(player_id: int, result: int, duration: float) -> void:
+	var peer_id := int(player_peer_ids.get(player_id, 1))
+	if peer_id == 1:
+		_spin_wheel_remote(result, duration)
+	else:
+		_spin_wheel_remote.rpc_id(peer_id, result, duration)
+
+func _send_wheel_result(player_id: int, action: Dictionary) -> void:
+	var peer_id := int(player_peer_ids.get(player_id, 1))
+	if peer_id == 1:
+		_show_wheel_result_remote(action)
+	else:
+		_show_wheel_result_remote.rpc_id(peer_id, action)
+
+func _resolve_shop(player_id: int, cell_index: int) -> void:
+	var action := {"type": "shop", "cell_index": cell_index, "player_id": player_id}
+	_assign_event_id(action)
+	pending_actions[player_id] = action
+	_send_shop(player_id, action)
+	await _await_response(player_id, int(action["event_id"]), "shop_close")
+	_close_event(player_id, int(action["event_id"]))
+
+func _send_shop(player_id: int, action: Dictionary) -> void:
+	var state: Dictionary = players_state[player_id]
+	var peer_id := int(player_peer_ids.get(player_id, 1))
+	if peer_id == 1:
+		pending_action = action.duplicate(true)
+		displayed_event_id = int(action["event_id"])
+		game_ui.show_shop(state["inventory"], int(state["coins"]))
+	else:
+		_show_shop_remote.rpc_id(peer_id, action, state["inventory"], int(state["coins"]))
+
+func _host_buy_card(player_id: int, card_id: String) -> bool:
+	if not is_host or not pending_actions.has(player_id) or String(pending_actions[player_id].get("type", "")) != "shop" or card_id not in GameRules.CARD_IDS:
+		return false
+	var price := GameRules.card_price(card_id)
+	var state: Dictionary = players_state[player_id]
+	if int(state["coins"]) < price:
+		return false
+	var inventory: Dictionary = state["inventory"]
+	state["coins"] = int(state["coins"]) - price
+	inventory[card_id] = int(inventory.get(card_id, 0)) + 1
+	state["inventory"] = inventory
+	players_state[player_id] = state
+	_broadcast_state()
+	_send_shop(player_id, pending_actions[player_id])
+	return true
+
+func _host_use_card(player_id: int, card_id: String, target: int) -> bool:
+	if not is_host or not can_player_roll(player_id) or card_id not in GameRules.CARD_IDS:
+		return false
+	var state: Dictionary = players_state[player_id]
+	var inventory: Dictionary = state["inventory"]
+	if int(inventory.get(card_id, 0)) <= 0:
+		return false
+	var valid := false
+	match card_id:
+		GameRules.CARD_REMOTE_DICE:
+			valid = target >= 1 and target <= 6
+			if valid: state["forced_next_roll"] = target
+		GameRules.CARD_TOLL_FREE:
+			valid = true
+			state["next_toll_free"] = true
+		GameRules.CARD_REVERSE:
+			valid = true
+			state["reverse_next_move"] = true
+		GameRules.CARD_SPEED:
+			valid = true
+			state["speed_next_move"] = true
+		GameRules.CARD_BUILD:
+			valid = _card_build(player_id, target)
+		GameRules.CARD_DEMOLISH:
+			valid = _card_demolish(player_id, target)
+		GameRules.CARD_FORCE_BUY:
+			valid = _card_force_buy(player_id)
+			if valid: state = players_state[player_id]
+		GameRules.CARD_EQUALIZE:
+			valid = _card_equalize(player_id, target)
+			if valid: state = players_state[player_id]
+	if not valid:
+		return false
+	inventory = state["inventory"]
+	inventory[card_id] = int(inventory[card_id]) - 1
+	state["inventory"] = inventory
+	players_state[player_id] = state
+	_broadcast_state()
+	_broadcast_toast("Player %d 使用了%s" % [player_id, String(GameRules.CARD_NAMES[card_id])])
+	return true
+
+func _card_build(player_id: int, cell_index: int) -> bool:
+	if cell_index < 0 or cell_index >= properties.size(): return false
+	var property: Dictionary = properties[cell_index]
+	if String(property["cell_type"]) != GameRules.CELL_PROPERTY or int(property["owner_id"]) != player_id or int(property["property_level"]) >= GameRules.MAX_PROPERTY_LEVEL: return false
+	property["property_level"] = int(property["property_level"]) + 1
+	properties[cell_index] = property
+	return true
+
+func _card_demolish(player_id: int, cell_index: int) -> bool:
+	if cell_index < 0 or cell_index >= properties.size(): return false
+	var property: Dictionary = properties[cell_index]
+	if String(property["cell_type"]) != GameRules.CELL_PROPERTY or int(property["owner_id"]) in [-1, player_id] or int(property["property_level"]) <= 1: return false
+	property["property_level"] = int(property["property_level"]) - 1
+	properties[cell_index] = property
+	return true
+
+func _card_force_buy(player_id: int) -> bool:
+	var cell_index := int(players_state[player_id]["cell"])
+	var property: Dictionary = properties[cell_index]
+	var owner_id := int(property["owner_id"])
+	if String(property["cell_type"]) != GameRules.CELL_PROPERTY or owner_id in [-1, player_id]: return false
+	var price := GameRules.capture_price(int(property["property_level"]), int(property["capture_count"]))
+	if int(players_state[player_id]["coins"]) < price: return false
+	_apply_property_action(player_id, {"type": "capture", "cell_index": cell_index, "price": price})
+	return true
+
+func _card_equalize(player_id: int, target_player_id: int) -> bool:
+	if target_player_id == player_id or target_player_id not in active_player_ids: return false
+	var player: Dictionary = players_state[player_id]
+	var target: Dictionary = players_state[target_player_id]
+	var total := int(player["coins"]) + int(target["coins"])
+	player["coins"] = floori(float(total) * 0.5)
+	target["coins"] = total - int(player["coins"])
+	players_state[player_id] = player
+	players_state[target_player_id] = target
+	return true
+
+func _broadcast_toast(message: String, excluded_player_id: int = -1) -> void:
+	for player_id in active_player_ids:
+		if player_id == excluded_player_id: continue
+		var peer_id := int(player_peer_ids.get(player_id, 1))
+		if peer_id == 1:
+			_show_toast_remote(message)
+		else:
+			_show_toast_remote.rpc_id(peer_id, message)
 
 func _request_player_decision(player_id: int, action: Dictionary) -> bool:
 	_assign_event_id(action)
@@ -499,10 +714,11 @@ func _broadcast_state() -> void:
 		_apply_snapshot(snapshot)
 
 func _make_snapshot() -> Dictionary:
-	return {"players": players_state.duplicate(true), "properties": properties.duplicate(true), "last_rolls": last_rolls.duplicate(true), "last_event": last_event.duplicate(true), "last_wheel_result": last_wheel_result}
+	return {"players": players_state.duplicate(true), "active_player_ids": active_player_ids.duplicate(), "properties": properties.duplicate(true), "last_rolls": last_rolls.duplicate(true), "last_event": last_event.duplicate(true), "last_wheel_result": last_wheel_result}
 
 func _apply_snapshot(snapshot: Dictionary) -> void:
 	players_state = snapshot["players"].duplicate(true)
+	active_player_ids.assign(snapshot.get("active_player_ids", [1, 2]))
 	properties = snapshot["properties"].duplicate(true)
 	last_rolls = snapshot.get("last_rolls", {1: 0, 2: 0}).duplicate(true)
 	last_event = snapshot.get("last_event", {}).duplicate(true)
@@ -510,8 +726,9 @@ func _apply_snapshot(snapshot: Dictionary) -> void:
 	game_is_started = true
 	_show_world()
 	board.set_property_states(properties)
-	for player_id in [1, 2]:
+	for player_id in player_nodes:
 		var player := _player_node(player_id)
+		player.visible = player_id in active_player_ids
 		if not player.is_moving:
 			player.place_at_cell(int(players_state[player_id]["cell"]), board)
 	_refresh_ui()
@@ -519,16 +736,22 @@ func _apply_snapshot(snapshot: Dictionary) -> void:
 
 func _show_world() -> void:
 	board.visible = true
-	player_1.visible = true
-	player_2.visible = true
+	for player_id in player_nodes:
+		player_nodes[player_id].visible = player_id in active_player_ids
 	game_ui.show_game()
 
 func _refresh_ui() -> void:
 	if local_player_id > 0:
-		game_ui.update_game_state(local_player_id, players_state, last_rolls)
+		game_ui.update_game_state(local_player_id, players_state, active_player_ids, last_rolls)
 
 func _player_node(player_id: int) -> BoardPlayer:
-	return player_1 if player_id == 1 else player_2
+	return player_nodes[player_id]
+
+func _next_available_player_id() -> int:
+	for player_id in range(2, 7):
+		if not player_peer_ids.has(player_id):
+			return player_id
+	return -1
 
 func _player_id_for_peer(peer_id: int) -> int:
 	for player_id in player_peer_ids:
