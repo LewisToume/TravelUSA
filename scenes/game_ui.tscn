@@ -113,17 +113,17 @@ mouse_filter = 2
 offset_left = 32.0
 offset_top = 32.0
 offset_right = 520.0
-offset_bottom = 350.0
+offset_bottom = 390.0
 theme_override_styles/panel = SubResource("PanelStyle")
 
 [node name="Labels" type="VBoxContainer" parent="HUD/InfoPanel"]
 layout_mode = 2
 theme_override_constants/separation = 7
 
-[node name="CurrentPlayerLabel" type="Label" parent="HUD/InfoPanel/Labels"]
+[node name="PlayerLabel" type="Label" parent="HUD/InfoPanel/Labels"]
 layout_mode = 2
 theme_override_font_sizes/font_size = 30
-text = "当前玩家：Player 1"
+text = "Player 1"
 
 [node name="CoinsLabel" type="Label" parent="HUD/InfoPanel/Labels"]
 layout_mode = 2
@@ -131,26 +131,32 @@ theme_override_colors/font_color = Color(1, 0.82, 0.3, 1)
 theme_override_font_sizes/font_size = 28
 text = "自己的金币：0"
 
-[node name="AllCoinsLabel" type="Label" parent="HUD/InfoPanel/Labels"]
+[node name="StaminaLabel" type="Label" parent="HUD/InfoPanel/Labels"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.45, 1, 0.55, 1)
+theme_override_font_sizes/font_size = 28
+text = "自己的活力：20"
+
+[node name="AllPlayersLabel" type="Label" parent="HUD/InfoPanel/Labels"]
 layout_mode = 2
 theme_override_font_sizes/font_size = 23
-text = "P1 0  |  P2 0"
+text = "P1：0 金币 / 20 活力  |  P2：0 金币 / 20 活力"
 
 [node name="CellLabel" type="Label" parent="HUD/InfoPanel/Labels"]
 layout_mode = 2
 theme_override_font_sizes/font_size = 28
-text = "当前格子：0"
+text = "当前位置：0"
 
 [node name="RollLabel" type="Label" parent="HUD/InfoPanel/Labels"]
 layout_mode = 2
 theme_override_font_sizes/font_size = 28
 text = "骰子点数：—"
 
-[node name="TurnStatusLabel" type="Label" parent="HUD/InfoPanel/Labels"]
+[node name="ActionStatusLabel" type="Label" parent="HUD/InfoPanel/Labels"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.35, 0.86, 1, 1)
 theme_override_font_sizes/font_size = 25
-text = "等待连接"
+text = "状态：可行动"
 
 [node name="RollButton" type="Button" parent="HUD"]
 anchor_left = 1.0

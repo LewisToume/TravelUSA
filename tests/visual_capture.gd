@@ -21,20 +21,30 @@ func _run() -> void:
 	game.player_1.minimum_step_duration = 0.001
 	game.start_local_test_game()
 	game.request_test_roll(9)
-	while game.phase != "wheel_ready":
+	while not game.pending_actions.has(1) or String(game.pending_actions[1].get("type", "")) != "wheel":
 		await process_frame
 	_save_view("res://artifacts/game_view.png")
 	game.request_wheel_spin()
 	await create_timer(0.16).timeout
 	_save_view("res://artifacts/wheel_spinning_view.png")
-	while game.phase != "wheel_result":
+	while int(game.players_state[1]["coins"]) != 1200:
 		await process_frame
 	_save_view("res://artifacts/wheel_result_view.png")
 	quit(0)
 
 
 func _save_view(path: String) -> void:
-	var image := root.get_texture().get_image()
+	if DisplayServer.get_name() == "headless":
+		print("CAPTURE SKIPPED | headless renderer has no viewport image")
+		return
+	var texture := root.get_texture()
+	if texture == null:
+		print("CAPTURE SKIPPED | headless renderer has no viewport texture")
+		return
+	var image := texture.get_image()
+	if image == null:
+		print("CAPTURE SKIPPED | headless renderer has no viewport image")
+		return
 	var error := image.save_png(path)
 	if error == OK:
 		print("CAPTURED | ", path, " | ", image.get_size())

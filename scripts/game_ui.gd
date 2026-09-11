@@ -14,12 +14,13 @@ signal wheel_confirmation_requested
 @onready var host_button: Button = $StartupOverlay/Center/Panel/Content/Buttons/HostButton
 @onready var join_button: Button = $StartupOverlay/Center/Panel/Content/Buttons/JoinButton
 @onready var hud: Control = $HUD
-@onready var current_player_label: Label = $HUD/InfoPanel/Labels/CurrentPlayerLabel
+@onready var player_label: Label = $HUD/InfoPanel/Labels/PlayerLabel
 @onready var coins_label: Label = $HUD/InfoPanel/Labels/CoinsLabel
-@onready var all_coins_label: Label = $HUD/InfoPanel/Labels/AllCoinsLabel
+@onready var stamina_label: Label = $HUD/InfoPanel/Labels/StaminaLabel
+@onready var all_players_label: Label = $HUD/InfoPanel/Labels/AllPlayersLabel
 @onready var cell_label: Label = $HUD/InfoPanel/Labels/CellLabel
 @onready var roll_label: Label = $HUD/InfoPanel/Labels/RollLabel
-@onready var turn_status_label: Label = $HUD/InfoPanel/Labels/TurnStatusLabel
+@onready var action_status_label: Label = $HUD/InfoPanel/Labels/ActionStatusLabel
 @onready var roll_button: Button = $HUD/RollButton
 @onready var property_overlay: Control = $PropertyOverlay
 @onready var property_title: Label = $PropertyOverlay/Center/Panel/Content/Title
@@ -56,20 +57,23 @@ func set_lobby_buttons_enabled(enabled: bool) -> void:
 	host_button.disabled = not enabled
 	join_button.disabled = not enabled
 
-func update_game_state(local_player_id: int, current_player_id: int, players: Dictionary, cell_index: int, roll_value: int, phase: String) -> void:
-	current_player_label.text = "当前玩家：Player %d" % current_player_id
+func update_game_state(local_player_id: int, players: Dictionary, last_rolls: Dictionary) -> void:
+	player_label.text = "Player %d" % local_player_id
 	var own_state: Dictionary = players.get(local_player_id, {})
 	coins_label.text = "自己的金币：%d" % int(own_state.get("coins", 0))
+	stamina_label.text = "自己的活力：%d" % int(own_state.get("stamina", 0))
 	var p1: Dictionary = players.get(1, {})
 	var p2: Dictionary = players.get(2, {})
-	all_coins_label.text = "P1 %d  |  P2 %d" % [int(p1.get("coins", 0)), int(p2.get("coins", 0))]
-	cell_label.text = "当前格子：%d" % cell_index
+	all_players_label.text = "P1：%d 金币 / %d 活力  |  P2：%d 金币 / %d 活力" % [int(p1.get("coins", 0)), int(p1.get("stamina", 0)), int(p2.get("coins", 0)), int(p2.get("stamina", 0))]
+	cell_label.text = "当前位置：%d" % int(own_state.get("cell", 0))
+	var roll_value := int(last_rolls.get(local_player_id, 0))
 	roll_label.text = "骰子点数：%s" % (str(roll_value) if roll_value > 0 else "—")
-	var is_my_turn := local_player_id == current_player_id
-	var can_roll := is_my_turn and phase == "waiting"
+	var resolving := String(own_state.get("action_state", GameRules.ACTION_IDLE)) == GameRules.ACTION_RESOLVING
+	var has_stamina := int(own_state.get("stamina", 0)) > 0
+	var can_roll := has_stamina and not resolving
 	roll_button.disabled = not can_roll
-	roll_button.text = "掷骰子" if can_roll else ("移动中…" if phase == "moving" else "等待")
-	turn_status_label.text = ("轮到你操作" if phase == "waiting" else "正在处理当前回合") if is_my_turn else "等待 Player %d" % current_player_id
+	roll_button.text = "掷骰子" if can_roll else ("处理中…" if resolving else "活力不足")
+	action_status_label.text = "状态：可行动" if can_roll else ("状态：处理中" if resolving else "状态：活力不足")
 
 func show_property_prompt(action: Dictionary) -> void:
 	skip_button.visible = true
@@ -105,7 +109,7 @@ func show_event_prompt(action: Dictionary, can_confirm: bool) -> void:
 	else:
 		property_title.text = "大转盘"
 		property_details.text = "获得 %d 金币" % amount if amount >= 0 else "损失 %d 金币" % absi(amount)
-	confirm_button.text = "确定" if can_confirm else "等待 Player %d 确认" % int(action.get("player_id", 0))
+	confirm_button.text = "确定" if can_confirm else "由 Player %d 确认" % int(action.get("player_id", 0))
 	confirm_button.disabled = not can_confirm
 	skip_button.visible = false
 	property_overlay.visible = true
@@ -122,19 +126,19 @@ func show_toll_prompt(action: Dictionary, local_player_id: int) -> void:
 		confirm_button.disabled = false
 	else:
 		property_details.text = "Player %d 经过你的 L%d 房产\nPlayer %d 向你支付了 %d 金币" % [payer_id, level, payer_id, amount]
-		confirm_button.text = "等待 Player %d 确认" % payer_id
+		confirm_button.text = "由 Player %d 确认" % payer_id
 		confirm_button.disabled = true
 	skip_button.visible = false
 	property_overlay.visible = true
 
-func show_wheel_ready(current_player_id: int, can_start: bool) -> void:
-	wheel_overlay.show_ready(current_player_id, can_start)
+func show_wheel_ready(action_player_id: int, can_start: bool) -> void:
+	wheel_overlay.show_ready(action_player_id, can_start)
 
 func play_wheel_spin(result: int, duration: float) -> void:
 	wheel_overlay.play_spin(result, duration)
 
-func show_wheel_result(result: int, can_confirm: bool, current_player_id: int) -> void:
-	wheel_overlay.show_result(result, can_confirm, current_player_id)
+func show_wheel_result(result: int, can_confirm: bool, action_player_id: int) -> void:
+	wheel_overlay.show_result(result, can_confirm, action_player_id)
 
 func hide_property_prompt() -> void:
 	property_overlay.visible = false

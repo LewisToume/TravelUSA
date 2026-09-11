@@ -2,7 +2,10 @@ extends RefCounted
 class_name GameRules
 
 const INITIAL_COINS := 1000
+const INITIAL_STAMINA := 20
 const INITIAL_PLAYER_LEVEL := 10
+const ACTION_IDLE := "IDLE"
+const ACTION_RESOLVING := "RESOLVING"
 const MAX_PROPERTY_LEVEL := 5
 const MAX_CAPTURABLE_PROPERTY_LEVEL := 3
 const CAPTURE_OWNER_SHARE := 0.8
@@ -37,8 +40,15 @@ const MAP_CELL_TYPES := [
 	CELL_PROPERTY, CELL_PROPERTY, CELL_PROPERTY,
 ]
 
-static func build_player_state() -> Dictionary:
-	return {"cell": 0, "coins": INITIAL_COINS, "player_level": INITIAL_PLAYER_LEVEL}
+static func build_player_state(player_id: int) -> Dictionary:
+	return {
+		"player_id": player_id,
+		"cell": 0,
+		"coins": INITIAL_COINS,
+		"stamina": INITIAL_STAMINA,
+		"action_state": ACTION_IDLE,
+		"player_level": INITIAL_PLAYER_LEVEL,
+	}
 
 static func build_cells(cell_count: int) -> Array[Dictionary]:
 	assert(cell_count == MAP_CELL_TYPES.size(), "Board cell count must match MAP_CELL_TYPES.")

@@ -14,12 +14,12 @@ func _ready() -> void:
 	confirm_button.pressed.connect(func() -> void: confirmation_requested.emit())
 	visible = false
 
-func show_ready(current_player_id: int, can_start: bool) -> void:
+func show_ready(action_player_id: int, can_start: bool) -> void:
 	wheel_face.reset_wheel()
-	status_label.text = "点击开始，让转盘决定金币变化" if can_start else "等待 Player %d 开始转动" % current_player_id
+	status_label.text = "点击开始，让转盘决定金币变化" if can_start else "观看 Player %d 的转盘" % action_player_id
 	spin_button.visible = true
 	spin_button.disabled = not can_start
-	spin_button.text = "开始转动" if can_start else "等待开始"
+	spin_button.text = "开始转动" if can_start else "仅行动玩家可操作"
 	confirm_button.visible = false
 	visible = true
 
@@ -32,12 +32,12 @@ func play_spin(result: int, duration: float) -> void:
 	status_label.text = "转盘旋转中…"
 	wheel_face.spin_to_result(result, duration)
 
-func show_result(result: int, can_confirm: bool, current_player_id: int) -> void:
+func show_result(result: int, can_confirm: bool, action_player_id: int) -> void:
 	status_label.text = "获得 %d 金币" % result if result >= 0 else "损失 %d 金币" % absi(result)
 	spin_button.visible = false
 	confirm_button.visible = true
 	confirm_button.disabled = not can_confirm
-	confirm_button.text = "确定" if can_confirm else "等待 Player %d 确认" % current_player_id
+	confirm_button.text = "确定" if can_confirm else "由 Player %d 确认" % action_player_id
 
 func hide_wheel() -> void:
 	visible = false
