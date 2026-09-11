@@ -10,6 +10,12 @@ signal wheel_confirmation_requested
 signal shop_card_requested(card_id: String)
 signal shop_closed
 signal card_use_requested(card_id: String, target: int)
+signal card_selected(card_id: String)
+signal target_selection_cancelled
+signal target_selection_confirmed
+signal remote_dice_confirmed(value: int)
+signal player_target_selected(player_id: int)
+signal force_buy_requested
 
 @onready var startup_overlay: Control = $StartupOverlay
 @onready var lobby_status_label: Label = $StartupOverlay/Center/Panel/Content/LobbyStatus
@@ -36,7 +42,6 @@ var card_overlay: PanelContainer
 var card_title: Label
 var card_coins: Label
 var card_list: Container
-var target_selector: SpinBox
 var card_close_button: Button
 var toast_container: VBoxContainer
 var dice_label: Label
@@ -46,6 +51,14 @@ var mailbox_list: VBoxContainer
 var unread_count := 0
 var _known_notification_ids: Dictionary = {}
 var _latest_inventory: Dictionary = {}
+var selection_overlay: PanelContainer
+var selection_title: Label
+var selection_details: Label
+var selection_choices: HBoxContainer
+var selection_confirm_button: Button
+var selection_cancel_button: Button
+var selected_remote_roll := 0
+var force_buy_button: Button
 
 func _ready() -> void:
 	_build_card_and_toast_ui()
@@ -54,6 +67,7 @@ func _ready() -> void:
 	roll_button.pressed.connect(func() -> void: roll_requested.emit())
 	confirm_button.pressed.connect(func() -> void: property_action_requested.emit(true))
 	skip_button.pressed.connect(func() -> void: property_action_requested.emit(false))
+	force_buy_button.pressed.connect(func() -> void: force_buy_requested.emit())
 	wheel_overlay.spin_requested.connect(func() -> void: wheel_spin_requested.emit())
 	wheel_overlay.confirmation_requested.connect(func() -> void: wheel_confirmation_requested.emit())
 	show_startup()
@@ -86,6 +100,8 @@ func update_game_state(local_player_id: int, players: Dictionary, _active_player
 	cell_label.text = "当前位置：%d" % int(own_state.get("cell", 0))
 	var roll_value := int(last_rolls.get(local_player_id, 0))
 	roll_label.text = "骰子点数：%s" % (str(roll_value) if roll_value > 0 else "—")
+	if bool(own_state.get("last_move_was_speed", false)):
+		roll_label.text += "  加速 ×2  移动：%d" % int(own_state.get("last_move_distance", roll_value))
 	var resolving := String(own_state.get("action_state", GameRules.ACTION_IDLE)) == GameRules.ACTION_RESOLVING
 	var has_stamina := int(own_state.get("stamina", 0)) > 0
 	var can_roll := has_stamina and not resolving
@@ -93,9 +109,9 @@ func update_game_state(local_player_id: int, players: Dictionary, _active_player
 	roll_button.text = "掷骰子" if can_roll else ("处理中…" if resolving else "活力不足")
 	var effects: Dictionary = own_state.get("status_effects", {})
 	var effect_text: Array[String] = []
-	if int(effects.get("toll_free_charges", 0)) > 0: effect_text.append("🛡免租")
+	if bool(effects.get("toll_free_next_action", false)): effect_text.append("🛡免租")
 	if bool(effects.get("reverse_next_move", false)): effect_text.append("↩反向")
-	if int(effects.get("speed_bonus_next_move", 0)) > 0: effect_text.append("👟+%d" % int(effects["speed_bonus_next_move"]))
+	if int(effects.get("speed_multiplier_next_move", 1)) > 1: effect_text.append("👟×2")
 	action_status_label.text = ("状态：可行动" if can_roll else ("状态：处理中" if resolving else "状态：活力不足")) + ("  " + " ".join(effect_text) if not effect_text.is_empty() else "")
 	_update_mailbox(notifications)
 
@@ -113,21 +129,27 @@ func play_dice_roll(final_roll: int, duration: float) -> void:
 	tween.tween_callback(func() -> void: dice_label.visible = false)
 
 func play_card_effect(card_id: String) -> void:
-	var glyphs := {GameRules.CARD_TOLL_FREE: "🛡", GameRules.CARD_SPEED: "👟", GameRules.CARD_REVERSE: "↩", GameRules.CARD_BUILD: "🏠", GameRules.CARD_DEMOLISH: "💥", GameRules.CARD_EQUALIZE: "⚖"}
+	var glyphs := {GameRules.CARD_REMOTE_DICE: "🎲", GameRules.CARD_TOLL_FREE: "🛡", GameRules.CARD_SPEED: "🪶👟", GameRules.CARD_REVERSE: "↩", GameRules.CARD_BUILD: "🏠", GameRules.CARD_DEMOLISH: "💥", GameRules.CARD_FORCE_BUY: "⚑", GameRules.CARD_EQUALIZE: "⚖"}
 	if not glyphs.has(card_id):
 		return
 	dice_label.text = String(glyphs[card_id])
 	dice_label.visible = true
 	dice_label.modulate = Color.WHITE
-	dice_label.scale = Vector2(0.4, 0.4)
+	dice_label.scale = Vector2(0.8, 0.8)
+	var start_position := dice_label.position
 	var tween := dice_label.create_tween()
-	tween.tween_property(dice_label, "scale", Vector2(1.25, 1.25), 0.18)
-	tween.tween_property(dice_label, "scale", Vector2.ONE, 0.22)
+	tween.tween_property(dice_label, "scale", Vector2(2.25, 2.25), 0.18)
+	if card_id == GameRules.CARD_SPEED:
+		tween.tween_property(dice_label, "position:x", dice_label.position.x + 220.0, 0.28)
+	tween.tween_property(dice_label, "scale", Vector2(1.65, 1.65), 0.22)
 	tween.tween_property(dice_label, "modulate:a", 0.0, 0.4)
-	tween.tween_callback(func() -> void: dice_label.visible = false)
+	tween.tween_callback(func() -> void:
+		dice_label.visible = false
+		dice_label.position = start_position)
 
 func show_property_prompt(action: Dictionary) -> void:
 	skip_button.visible = true
+	force_buy_button.visible = false
 	var action_type := String(action.get("type", ""))
 	var price := int(action.get("price", 0))
 	var cell := int(action.get("cell_index", 0))
@@ -146,8 +168,9 @@ func show_property_prompt(action: Dictionary) -> void:
 		"capture":
 			property_title.text = "是否抢占该房产？"
 			property_details.text = "房主：Player %d\n房产等级：L%d\n抢占价格：%d 金币" % [int(action.get("owner_id", -1)), level, price]
-			confirm_button.text = "抢占"
+			confirm_button.text = "普通抢占"
 			skip_button.text = "放弃"
+			force_buy_button.visible = bool(action.get("force_buy_available", false))
 	confirm_button.disabled = not bool(action.get("can_afford", true))
 	property_overlay.visible = true
 
@@ -215,7 +238,7 @@ func show_shop(inventory: Dictionary, coins: int) -> void:
 func _show_inventory() -> void:
 	_populate_card_list(false)
 	card_title.text = "我的卡牌"
-	card_coins.text = "目标：玩家编号 / 格子编号 / 遥控骰子点数"
+	card_coins.text = "选择卡牌后按对应方式选取目标"
 	card_close_button.text = "关闭"
 	card_overlay.visible = true
 
@@ -233,7 +256,7 @@ func _populate_card_list(shop_mode: bool) -> void:
 			button.pressed.connect(func() -> void: shop_card_requested.emit(card_id))
 		else:
 			button.pressed.connect(func() -> void:
-				card_use_requested.emit(card_id, int(target_selector.value))
+				card_selected.emit(card_id)
 				card_overlay.visible = false)
 		card_list.add_child(button)
 
@@ -278,7 +301,6 @@ func _build_card_and_toast_ui() -> void:
 	card_overlay.add_child(content)
 	card_title = Label.new(); card_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; card_title.add_theme_font_size_override("font_size", 36); content.add_child(card_title)
 	card_coins = Label.new(); card_coins.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; card_coins.add_theme_font_size_override("font_size", 22); content.add_child(card_coins)
-	target_selector = SpinBox.new(); target_selector.min_value = 1; target_selector.max_value = 29; target_selector.value = 1; content.add_child(target_selector)
 	card_list = GridContainer.new(); card_list.columns = 4; content.add_child(card_list)
 	card_close_button = Button.new(); content.add_child(card_close_button)
 	card_close_button.pressed.connect(func() -> void:
@@ -287,6 +309,87 @@ func _build_card_and_toast_ui() -> void:
 		if was_shop: shop_closed.emit())
 	card_overlay.visible = false
 	add_child(card_overlay)
+	force_buy_button = Button.new()
+	force_buy_button.text = "使用强购卡"
+	force_buy_button.custom_minimum_size = Vector2(190, 58)
+	$PropertyOverlay/Center/Panel/Content/Actions.add_child(force_buy_button)
+	force_buy_button.visible = false
+	_build_selection_ui()
+
+func _build_selection_ui() -> void:
+	selection_overlay = PanelContainer.new()
+	selection_overlay.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	selection_overlay.offset_left = -410; selection_overlay.offset_top = 80; selection_overlay.offset_right = 410; selection_overlay.offset_bottom = 310
+	var content := VBoxContainer.new(); selection_overlay.add_child(content)
+	selection_title = Label.new(); selection_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; selection_title.add_theme_font_size_override("font_size", 32); content.add_child(selection_title)
+	selection_details = Label.new(); selection_details.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; selection_details.add_theme_font_size_override("font_size", 23); content.add_child(selection_details)
+	selection_choices = HBoxContainer.new(); selection_choices.alignment = BoxContainer.ALIGNMENT_CENTER; content.add_child(selection_choices)
+	var actions := HBoxContainer.new(); actions.alignment = BoxContainer.ALIGNMENT_CENTER; content.add_child(actions)
+	selection_confirm_button = Button.new(); selection_confirm_button.text = "确认使用"; selection_confirm_button.disabled = true; actions.add_child(selection_confirm_button)
+	selection_cancel_button = Button.new(); selection_cancel_button.text = "取消"; actions.add_child(selection_cancel_button)
+	selection_confirm_button.pressed.connect(func() -> void: target_selection_confirmed.emit())
+	selection_cancel_button.pressed.connect(func() -> void: target_selection_cancelled.emit())
+	selection_overlay.visible = false; add_child(selection_overlay)
+
+func show_map_target_selector(title: String) -> void:
+	_clear_selection_choices()
+	selection_title.text = title
+	selection_details.text = "点击地图中高亮并呼吸的房产"
+	selection_confirm_button.visible = false
+	selection_overlay.visible = true
+
+func show_remote_dice_selector() -> void:
+	_clear_selection_choices()
+	selected_remote_roll = 0
+	selection_title.text = "请选择骰子点数"
+	selection_details.text = "请选择 1～6，再确认使用遥控骰子"
+	for value in range(1, 7):
+		var button := Button.new(); button.text = str(value); button.toggle_mode = true; button.custom_minimum_size = Vector2(82, 64)
+		button.add_theme_font_size_override("font_size", 30)
+		button.pressed.connect(func() -> void: _select_remote_roll(value, button))
+		selection_choices.add_child(button)
+	selection_confirm_button.visible = true
+	selection_confirm_button.disabled = true
+	selection_overlay.visible = true
+
+func _select_remote_roll(value: int, selected_button: Button) -> void:
+	selected_remote_roll = value
+	for child in selection_choices.get_children():
+		if child is Button: child.button_pressed = child == selected_button
+	selection_details.text = "已选择：%d 点" % value
+	selection_confirm_button.disabled = false
+	for connection in selection_confirm_button.pressed.get_connections():
+		selection_confirm_button.pressed.disconnect(connection.callable)
+	selection_confirm_button.pressed.connect(func() -> void: remote_dice_confirmed.emit(selected_remote_roll), CONNECT_ONE_SHOT)
+
+func show_player_selector(players: Dictionary, target_ids: Array[int]) -> void:
+	_clear_selection_choices()
+	selection_title.text = "请选择均富对象"
+	selection_details.text = "只可选择当前视野内的其他玩家"
+	for player_id in target_ids:
+		var button := Button.new(); button.text = "Player %d\n%d 金币" % [player_id, int(players[player_id]["coins"])]; button.custom_minimum_size = Vector2(150, 72)
+		button.pressed.connect(func() -> void: player_target_selected.emit(player_id))
+		selection_choices.add_child(button)
+	selection_confirm_button.visible = false
+	selection_overlay.visible = true
+
+func show_card_confirmation(title: String, details: String) -> void:
+	_clear_selection_choices()
+	selection_title.text = title
+	selection_details.text = details
+	selection_confirm_button.visible = true
+	selection_confirm_button.disabled = false
+	selection_overlay.visible = true
+
+func hide_target_selector() -> void:
+	selection_overlay.visible = false
+	_clear_selection_choices()
+
+func _clear_selection_choices() -> void:
+	for child in selection_choices.get_children(): child.queue_free()
+	for connection in selection_confirm_button.pressed.get_connections():
+		selection_confirm_button.pressed.disconnect(connection.callable)
+	selection_confirm_button.pressed.connect(func() -> void: target_selection_confirmed.emit())
 
 func _update_mailbox(notifications: Array) -> void:
 	for event in notifications:
@@ -324,3 +427,4 @@ func hide_all_prompts() -> void:
 	property_overlay.visible = false
 	wheel_overlay.hide_wheel()
 	card_overlay.visible = false
+	hide_target_selector()

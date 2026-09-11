@@ -72,11 +72,14 @@ static func build_player_state(player_id: int) -> Dictionary:
 		"action_state": ACTION_IDLE,
 		"player_level": INITIAL_PLAYER_LEVEL,
 		"inventory": build_initial_inventory(),
-		"next_toll_free": false,
+		"toll_free_next_action": false,
+		"toll_free_this_action": false,
 		"reverse_next_move": false,
 		"speed_next_move": false,
 		"forced_next_roll": 0,
-		"status_effects": {"toll_free_charges": 0, "reverse_next_move": false, "speed_bonus_next_move": 0, "forced_next_roll": 0},
+		"last_move_distance": 0,
+		"last_move_was_speed": false,
+		"status_effects": {"toll_free_next_action": false, "reverse_next_move": false, "speed_multiplier_next_move": 1, "forced_next_roll": 0},
 	}
 
 static func build_initial_inventory() -> Dictionary:

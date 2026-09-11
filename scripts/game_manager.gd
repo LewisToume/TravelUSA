@@ -47,6 +47,8 @@ var test_mode := false
 var test_wheel_result_override := 0
 var test_wheel_spin_duration := 0.0
 var _random := RandomNumberGenerator.new()
+var targeting_card_id := ""
+var selected_card_target := -1
 
 func _ready() -> void:
 	_random.randomize()
@@ -73,6 +75,13 @@ func _ready() -> void:
 	game_ui.shop_card_requested.connect(request_buy_card)
 	game_ui.shop_closed.connect(close_shop)
 	game_ui.card_use_requested.connect(request_use_card)
+	game_ui.card_selected.connect(_on_card_selected)
+	game_ui.target_selection_cancelled.connect(_cancel_card_targeting)
+	game_ui.target_selection_confirmed.connect(_confirm_card_targeting)
+	game_ui.remote_dice_confirmed.connect(_confirm_remote_dice)
+	game_ui.player_target_selected.connect(_select_player_target)
+	game_ui.force_buy_requested.connect(_request_force_buy_from_property)
+	board.target_cell_selected.connect(_select_cell_target)
 	multiplayer.peer_connected.connect(_on_peer_connected)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	multiplayer.connected_to_server.connect(_on_connected_to_server)
@@ -183,9 +192,86 @@ func close_shop() -> void:
 
 func request_use_card(card_id: String, target: int) -> void:
 	if is_host:
-		_host_use_card(local_player_id, card_id, target)
+		if not _host_use_card(local_player_id, card_id, target):
+			_send_private_toast(local_player_id, "卡牌使用失败：目标或当前状态不符合条件")
 	else:
 		_request_use_card_rpc.rpc_id(1, card_id, target)
+
+func _on_card_selected(card_id: String) -> void:
+	targeting_card_id = card_id
+	selected_card_target = -1
+	match card_id:
+		GameRules.CARD_REMOTE_DICE:
+			game_ui.show_remote_dice_selector()
+		GameRules.CARD_BUILD, GameRules.CARD_DEMOLISH:
+			var cells: Array[int] = []
+			for cell_index in range(properties.size()):
+				var property: Dictionary = properties[cell_index]
+				var owner_id := int(property.get("owner_id", -1))
+				var level := int(property.get("property_level", 0))
+				var valid := _is_cell_in_player_view(local_player_id, cell_index)
+				if card_id == GameRules.CARD_BUILD:
+					valid = valid and owner_id == local_player_id and level >= 1 and level <= 4
+				else:
+					valid = valid and owner_id not in [-1, local_player_id] and level >= 2 and level <= 5
+				if valid: cells.append(cell_index)
+			board.set_selectable_cells(cells)
+			game_ui.show_map_target_selector("请选择要升级的房产" if card_id == GameRules.CARD_BUILD else "请选择要拆除的房产")
+		GameRules.CARD_EQUALIZE:
+			var targets: Array[int] = []
+			for player_id in active_player_ids:
+				if _is_player_in_player_view(local_player_id, player_id): targets.append(player_id)
+			game_ui.show_player_selector(players_state, targets)
+		GameRules.CARD_FORCE_BUY:
+			var cell_index := int(players_state[local_player_id]["cell"])
+			var property: Dictionary = properties[cell_index]
+			if String(property.get("cell_type", "")) != GameRules.CELL_PROPERTY or int(property.get("owner_id", -1)) in [-1, local_player_id] or int(property.get("property_level", 0)) > GameRules.MAX_CAPTURABLE_PROPERTY_LEVEL:
+				game_ui.show_toast("强购卡只能用于脚下敌方 L1～L3 房产")
+				_cancel_card_targeting()
+			else:
+				_show_force_buy_confirmation()
+		_:
+			game_ui.show_card_confirmation("确认使用%s？" % String(GameRules.CARD_NAMES[card_id]), "效果将在下一次行动生效")
+
+func _select_cell_target(cell_index: int) -> void:
+	if targeting_card_id not in [GameRules.CARD_BUILD, GameRules.CARD_DEMOLISH]: return
+	selected_card_target = cell_index
+	var property: Dictionary = properties[cell_index]
+	var level := int(property["property_level"])
+	var text := "将 %d 号房产 L%d → L%d？" % [cell_index, level, level + 1]
+	if targeting_card_id == GameRules.CARD_DEMOLISH:
+		text = "将 Player %d 的 %d 号房产 L%d → L%d？" % [int(property["owner_id"]), cell_index, level, level - 1]
+	game_ui.show_card_confirmation("确认目标", text)
+
+func _select_player_target(player_id: int) -> void:
+	selected_card_target = player_id
+	game_ui.show_card_confirmation("确认使用均富卡", "你：%d 金币\nPlayer %d：%d 金币\n确认后 Host 将按最新金币平分" % [int(players_state[local_player_id]["coins"]), player_id, int(players_state[player_id]["coins"])])
+
+func _confirm_remote_dice(value: int) -> void:
+	request_use_card(GameRules.CARD_REMOTE_DICE, value)
+	_cancel_card_targeting()
+
+func _confirm_card_targeting() -> void:
+	if targeting_card_id.is_empty(): return
+	request_use_card(targeting_card_id, selected_card_target)
+	_cancel_card_targeting()
+
+func _cancel_card_targeting() -> void:
+	targeting_card_id = ""
+	selected_card_target = -1
+	board.clear_target_selection()
+	game_ui.hide_target_selector()
+
+func _show_force_buy_confirmation() -> void:
+	var cell_index := int(players_state[local_player_id]["cell"])
+	var property: Dictionary = properties[cell_index]
+	var level := int(property.get("property_level", 0))
+	var price := GameRules.capture_price(level, int(property.get("capture_count", 0)))
+	game_ui.show_card_confirmation("确认使用强购卡", "房主：Player %d\n等级：L%d\n价格：%d 金币" % [int(property.get("owner_id", -1)), level, price])
+
+func _request_force_buy_from_property() -> void:
+	request_use_card(GameRules.CARD_FORCE_BUY, int(players_state[local_player_id]["cell"]))
+	submit_property_action(false)
 
 func _on_roll_requested() -> void:
 	if is_host:
@@ -335,7 +421,9 @@ func _request_buy_card_rpc(card_id: String) -> void:
 @rpc("any_peer", "call_remote", "reliable")
 func _request_use_card_rpc(card_id: String, target: int) -> void:
 	if is_host:
-		_host_use_card(_player_id_for_peer(multiplayer.get_remote_sender_id()), card_id, target)
+		var player_id := _player_id_for_peer(multiplayer.get_remote_sender_id())
+		if not _host_use_card(player_id, card_id, target):
+			_send_private_toast(player_id, "卡牌使用失败：目标或当前状态不符合条件")
 
 func _host_try_roll(requesting_player_id: int, forced_roll: int = -1) -> bool:
 	if not is_host or not game_is_started or not can_player_roll(requesting_player_id):
@@ -350,11 +438,16 @@ func _host_try_roll(requesting_player_id: int, forced_roll: int = -1) -> bool:
 		roll = clampi(roll, dice_min_value, dice_max_value)
 	roll = maxi(1, roll)
 	var direction := -1 if bool(state.get("reverse_next_move", false)) else 1
-	var move_distance := roll + (3 if bool(state.get("speed_next_move", false)) else 0)
+	var move_distance := roll * (2 if bool(state.get("speed_next_move", false)) else 1)
+	state["last_move_distance"] = move_distance
+	state["last_move_was_speed"] = move_distance != roll
+	state["toll_free_this_action"] = bool(state.get("toll_free_next_action", false))
+	state["toll_free_next_action"] = false
 	state["reverse_next_move"] = false
 	state["speed_next_move"] = false
 	state["status_effects"]["reverse_next_move"] = false
-	state["status_effects"]["speed_bonus_next_move"] = 0
+	state["status_effects"]["speed_multiplier_next_move"] = 1
+	state["status_effects"]["toll_free_next_action"] = false
 	var start_cell := int(state["cell"])
 	var target_cell := posmod(start_cell + direction * move_distance, board.get_cell_count())
 	var action_id := next_action_id
@@ -363,6 +456,8 @@ func _host_try_roll(requesting_player_id: int, forced_roll: int = -1) -> bool:
 	state["action_state"] = GameRules.ACTION_RESOLVING
 	state["cell"] = target_cell
 	players_state[requesting_player_id] = state
+	if bool(state["toll_free_this_action"]):
+		_send_card_effect(requesting_player_id, GameRules.CARD_TOLL_FREE)
 	last_rolls[requesting_player_id] = roll
 	_broadcast_state()
 	_send_dice_roll(requesting_player_id, roll)
@@ -419,11 +514,10 @@ func _settle_step_toll(player_id: int, cell_index: int) -> bool:
 	if owner_id == -1 or owner_id == player_id or amount <= 0:
 		return false
 	var payer: Dictionary = players_state[player_id]
-	if bool(payer.get("next_toll_free", false)):
-		payer["next_toll_free"] = false
-		payer["status_effects"]["toll_free_charges"] = 0
+	if bool(payer.get("toll_free_this_action", false)):
 		players_state[player_id] = payer
 		_notify("toll_free", player_id, owner_id, cell_index, amount, "Player %d 使用免租卡，免除 %d 金币过路费" % [player_id, amount])
+		_send_private_toast(player_id, "免租 -%d" % amount)
 		_broadcast_state()
 		return true
 	var owner: Dictionary = players_state[owner_id]
@@ -545,7 +639,8 @@ func _host_buy_card(player_id: int, card_id: String) -> bool:
 	return true
 
 func _host_use_card(player_id: int, card_id: String, target: int) -> bool:
-	if not is_host or not can_player_roll(player_id) or card_id not in GameRules.CARD_IDS:
+	var resolving_force_buy := card_id == GameRules.CARD_FORCE_BUY and pending_actions.has(player_id) and String(pending_actions[player_id].get("type", "")) == "capture"
+	if not is_host or (not can_player_roll(player_id) and not resolving_force_buy) or card_id not in GameRules.CARD_IDS:
 		return false
 	var state: Dictionary = players_state[player_id]
 	var inventory: Dictionary = state["inventory"]
@@ -558,8 +653,8 @@ func _host_use_card(player_id: int, card_id: String, target: int) -> bool:
 			if valid: state["forced_next_roll"] = target; state["status_effects"]["forced_next_roll"] = target
 		GameRules.CARD_TOLL_FREE:
 			valid = true
-			state["next_toll_free"] = true
-			state["status_effects"]["toll_free_charges"] = 1
+			state["toll_free_next_action"] = true
+			state["status_effects"]["toll_free_next_action"] = true
 		GameRules.CARD_REVERSE:
 			valid = true
 			state["reverse_next_move"] = true
@@ -567,7 +662,7 @@ func _host_use_card(player_id: int, card_id: String, target: int) -> bool:
 		GameRules.CARD_SPEED:
 			valid = true
 			state["speed_next_move"] = true
-			state["status_effects"]["speed_bonus_next_move"] = 3
+			state["status_effects"]["speed_multiplier_next_move"] = 2
 		GameRules.CARD_BUILD:
 			valid = _is_cell_in_player_view(player_id, target) and _card_build(player_id, target)
 		GameRules.CARD_DEMOLISH:
@@ -585,11 +680,24 @@ func _host_use_card(player_id: int, card_id: String, target: int) -> bool:
 	state["inventory"] = inventory
 	players_state[player_id] = state
 	_send_card_effect(player_id, card_id)
-	_notify("card", player_id, target, int(state.get("cell", -1)), 0, "Player %d 使用了%s" % [player_id, String(GameRules.CARD_NAMES[card_id])])
+	_notify("card", player_id, target, int(state.get("cell", -1)), 0, _card_notification(player_id, card_id, target))
 	_broadcast_state()
 	if card_id == GameRules.CARD_REMOTE_DICE:
 		_host_try_roll(player_id, target)
 	return true
+
+func _card_notification(player_id: int, card_id: String, target: int) -> String:
+	match card_id:
+		GameRules.CARD_REMOTE_DICE: return "Player %d 使用遥控骰子，选择了 %d 点" % [player_id, target]
+		GameRules.CARD_BUILD:
+			var level := int(properties[target]["property_level"])
+			return "Player %d 使用建房卡，将 %d 号房产 L%d → L%d" % [player_id, target, level - 1, level]
+		GameRules.CARD_DEMOLISH:
+			var level := int(properties[target]["property_level"])
+			return "Player %d 使用拆房卡，将 Player %d 的 %d 号房产 L%d → L%d" % [player_id, int(properties[target]["owner_id"]), target, level + 1, level]
+		GameRules.CARD_FORCE_BUY: return "Player %d 使用强购卡取得了 %d 号房产" % [player_id, int(players_state[player_id]["cell"])]
+		GameRules.CARD_EQUALIZE: return "Player %d 使用均富卡与 Player %d 平分金币" % [player_id, target]
+		_: return "Player %d 使用了%s" % [player_id, String(GameRules.CARD_NAMES[card_id])]
 
 func _card_build(player_id: int, cell_index: int) -> bool:
 	if cell_index < 0 or cell_index >= properties.size(): return false
@@ -613,7 +721,7 @@ func _card_force_buy(player_id: int) -> bool:
 	var cell_index := int(players_state[player_id]["cell"])
 	var property: Dictionary = properties[cell_index]
 	var owner_id := int(property["owner_id"])
-	if String(property["cell_type"]) != GameRules.CELL_PROPERTY or owner_id in [-1, player_id]: return false
+	if String(property["cell_type"]) != GameRules.CELL_PROPERTY or owner_id in [-1, player_id] or int(property["property_level"]) > GameRules.MAX_CAPTURABLE_PROPERTY_LEVEL: return false
 	var price := GameRules.capture_price(int(property["property_level"]), int(property["capture_count"]))
 	if int(players_state[player_id]["coins"]) < price: return false
 	_apply_property_action(player_id, {"type": "capture", "cell_index": cell_index, "price": price})
@@ -634,13 +742,15 @@ func _is_cell_in_player_view(player_id: int, cell_index: int) -> bool:
 	if cell_index < 0 or cell_index >= board.get_cell_count():
 		return false
 	var half_view := get_viewport().get_visible_rect().size * 0.5
-	return board.get_cell_position(cell_index).distance_to(_player_node(player_id).position) <= maxf(half_view.x, half_view.y) + board.cell_size
+	var delta := board.get_cell_position(cell_index) - _player_node(player_id).position
+	return absf(delta.x) <= half_view.x + board.cell_size * 0.5 and absf(delta.y) <= half_view.y + board.cell_size * 0.5
 
 func _is_player_in_player_view(player_id: int, target_player_id: int) -> bool:
 	if target_player_id not in active_player_ids or target_player_id == player_id:
 		return false
 	var half_view := get_viewport().get_visible_rect().size * 0.5
-	return _player_node(player_id).position.distance_to(_player_node(target_player_id).position) <= maxf(half_view.x, half_view.y) + board.cell_size
+	var delta := _player_node(target_player_id).position - _player_node(player_id).position
+	return absf(delta.x) <= half_view.x and absf(delta.y) <= half_view.y
 
 func _broadcast_toast(message: String, excluded_player_id: int = -1) -> void:
 	for player_id in active_player_ids:
@@ -729,6 +839,7 @@ func _build_property_action(player_id: int, cell_index: int) -> Dictionary:
 		action.merge({"type": "upgrade", "price": GameRules.upgrade_price(level)})
 	elif owner_id != player_id and level >= 1 and level <= GameRules.MAX_CAPTURABLE_PROPERTY_LEVEL:
 		action.merge({"type": "capture", "price": GameRules.capture_price(level, int(property["capture_count"]))})
+		action["force_buy_available"] = int(player["inventory"].get(GameRules.CARD_FORCE_BUY, 0)) > 0
 	else:
 		return {}
 	action["can_afford"] = int(player["coins"]) >= int(action["price"])
@@ -753,8 +864,6 @@ func _apply_property_action(player_id: int, action: Dictionary) -> void:
 			players_state[old_owner] = old_owner_state
 			property["owner_id"] = player_id
 			property["capture_count"] = int(property["capture_count"]) + 1
-			if GameRules.can_upgrade_property(int(player["player_level"]), int(property["property_level"])):
-				property["property_level"] = int(property["property_level"]) + 1
 	players_state[player_id] = player
 	properties[cell_index] = property
 	var effect_type := "upgrade" if String(action["type"]) == "upgrade" else ("ownership" if String(action["type"]) in ["buy", "capture"] else "upgrade")
@@ -774,6 +883,7 @@ func _show_money_popup(player_id: int, amount: int) -> void:
 
 func _finish_player_action(player_id: int) -> void:
 	var state: Dictionary = players_state[player_id]
+	state["toll_free_this_action"] = false
 	state["action_state"] = GameRules.ACTION_IDLE
 	players_state[player_id] = state
 	_broadcast_state()

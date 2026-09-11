@@ -1,6 +1,8 @@
 extends Node2D
 class_name BoardPath
 
+signal target_cell_selected(cell_index: int)
+
 @export_range(8, 100, 1) var cell_count: int = 30
 @export_range(120.0, 600.0, 10.0) var cell_spacing: float = 320.0
 @export_range(60.0, 240.0, 5.0) var cell_size: float = 150.0
@@ -11,6 +13,8 @@ var _cell_positions: PackedVector2Array = PackedVector2Array()
 var _route_bounds: Rect2
 var property_states: Array = []
 var building_effects: Dictionary = {}
+var selectable_cells: Array[int] = []
+var selection_active := false
 
 const BACKGROUND_COLOR := Color("132331")
 const GRID_COLOR := Color(0.16, 0.25, 0.31, 0.5)
@@ -27,7 +31,44 @@ const CELL_BORDER_COLOR := Color("18323e")
 
 func _ready() -> void:
 	_rebuild_path()
+	set_process(true)
 	queue_redraw()
+
+func _process(_delta: float) -> void:
+	if selection_active:
+		queue_redraw()
+
+func set_selectable_cells(cells: Array[int]) -> void:
+	selectable_cells = cells.duplicate()
+	selection_active = true
+	queue_redraw()
+
+func clear_target_selection() -> void:
+	selectable_cells.clear()
+	selection_active = false
+	queue_redraw()
+
+func _unhandled_input(event: InputEvent) -> void:
+	if not selection_active:
+		return
+	var screen_position := Vector2.ZERO
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+		screen_position = event.position
+	elif event is InputEventScreenTouch and event.pressed:
+		screen_position = event.position
+	else:
+		return
+	var world_position := get_canvas_transform().affine_inverse() * screen_position
+	var closest := -1
+	var closest_distance := INF
+	for cell_index in selectable_cells:
+		var distance := world_position.distance_to(get_building_anchor(cell_index))
+		if distance < closest_distance:
+			closest = cell_index
+			closest_distance = distance
+	if closest >= 0 and closest_distance <= cell_size * 0.75:
+		target_cell_selected.emit(closest)
+		get_viewport().set_input_as_handled()
 
 
 func _rebuild_path() -> void:
@@ -143,6 +184,13 @@ func _draw() -> void:
 			_draw_building(get_building_anchor(index), owner_id, property_level)
 			if building_effects.has(index):
 				_draw_building_effect(get_building_anchor(index), String(building_effects[index]["type"]))
+		if selection_active and cell_type == GameRules.CELL_PROPERTY:
+			if index in selectable_cells:
+				var pulse := 9.0 + 5.0 * sin(float(Time.get_ticks_msec()) * 0.007)
+				draw_circle(get_building_anchor(index), cell_size * 0.55 + pulse, Color(1.0, 0.9, 0.25, 0.18))
+				draw_arc(get_building_anchor(index), cell_size * 0.55 + pulse, 0.0, TAU, 40, Color("ffe45c"), 7.0)
+			else:
+				draw_circle(get_building_anchor(index), cell_size * 0.5, Color(0.02, 0.03, 0.05, 0.58))
 
 func _draw_building_effect(anchor: Vector2, effect_type: String) -> void:
 	var color := Color(0.9, 0.95, 1.0, 0.7) if effect_type == "upgrade" else Color(0.55, 0.55, 0.55, 0.7)
