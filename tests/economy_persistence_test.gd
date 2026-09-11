@@ -73,9 +73,12 @@ func _run() -> void:
 
 	var p2: Dictionary = game.players_state[2]; p2["coins"] = 300; game.players_state[2] = p2
 	var p3: Dictionary = game.players_state[3]; p3["coins"] = 1300; game.players_state[3] = p3
-	var taxable_before := int(p2["daily_taxable_income"]) + int(p3["daily_taxable_income"])
-	game._card_equalize(2, 3)
-	check(int(game.players_state[2]["daily_taxable_income"]) + int(game.players_state[3]["daily_taxable_income"]) == taxable_before, "均富卡资产转移不计税")
+	var p4_equal: Dictionary = game.players_state[4]; p4_equal["coins"] = 200; game.players_state[4] = p4_equal
+	var user_coins_before := int(game.players_state[2]["coins"])
+	var taxable_before := int(p3["daily_taxable_income"]) + int(p4_equal["daily_taxable_income"])
+	game._card_equalize(2, [3, 4])
+	check(int(game.players_state[2]["coins"]) == user_coins_before and int(game.players_state[3]["coins"]) == 750 and int(game.players_state[4]["coins"]) == 750, "均富卡只平分两个其他玩家且使用者不参与")
+	check(int(game.players_state[3]["daily_taxable_income"]) + int(game.players_state[4]["daily_taxable_income"]) == taxable_before, "均富卡资产转移不计税")
 	_set_property(3, 2, 2)
 	var owner_tax_before := int(game.players_state[2]["daily_taxable_income"])
 	game._apply_property_action(3, {"type": "capture", "cell_index": 3, "price": 100})
@@ -87,34 +90,92 @@ func _run() -> void:
 	var p2_rank: Dictionary = _rank_entry(ranking, 2)
 	check(int(p2_rank["property_value"]) >= 800, "财富榜按 L1～L5 建造价值统计房产")
 
-	var before_tax_time := Time.get_unix_time_from_datetime_dict({"year": 2026, "month": 9, "day": 12, "hour": 15, "minute": 30, "second": 0})
-	var tax_time := Time.get_unix_time_from_datetime_dict({"year": 2026, "month": 9, "day": 12, "hour": 16, "minute": 31, "second": 0})
-	p2 = game.players_state[2]; p2["coins"] = 10; p2["daily_taxable_income"] = 101; p2["last_tax_date"] = "2026-09-11"; p2["bankruptcy_state"] = GameRules.BANKRUPTCY_NORMAL; game.players_state[2] = p2
+	var before_tax_time := Time.get_unix_time_from_datetime_dict({"year": 2026, "month": 9, "day": 12, "hour": 19, "minute": 59, "second": 0})
+	var tax_time := Time.get_unix_time_from_datetime_dict({"year": 2026, "month": 9, "day": 12, "hour": 20, "minute": 1, "second": 0})
+	p2 = game.players_state[2]; p2["coins"] = 10; p2["daily_taxable_income"] = 149; p2["last_tax_date"] = "2026-09-11"; p2["bankruptcy_state"] = GameRules.BANKRUPTCY_NORMAL; p2["tax_debt"] = 0; game.players_state[2] = p2
 	game.server_time_override = before_tax_time
-	check(not game._check_player_tax(2) and int(game.players_state[2]["coins"]) == 10, "15:30 尚未到统一税收时间")
+	check(not game._check_player_tax(2) and int(game.players_state[2]["coins"]) == 10, "20:00 前不结算税收")
 	game.server_time_override = tax_time
-	check(game._check_player_tax(2) and int(game.players_state[2]["coins"]) == 0 and String(game.players_state[2]["bankruptcy_state"]) == GameRules.BANKRUPTCY_BANKRUPT, "16:30 后按 floor(收入×10%) 扣税并可触发破产")
+	check(game._check_player_tax(2) and int(game.players_state[2]["coins"]) == 0 and int(game.players_state[2]["tax_debt"]) == 5 and String(game.players_state[2]["bankruptcy_state"]) == GameRules.BANKRUPTCY_TAX_DEBT, "20:00 按 round 结税且现金不足进入 TAX_DEBT 而非直接破产")
 	check(not game._check_player_tax(2), "同一天税收绝不重复结算")
-	var p4: Dictionary = game.players_state[4]; p4["coins"] = 500; p4["daily_taxable_income"] = 0; p4["last_tax_date"] = "2026-09-11"; p4["bankruptcy_state"] = GameRules.BANKRUPTCY_NORMAL; game.players_state[4] = p4
+	var p4: Dictionary = game.players_state[4]; p4["coins"] = 500; p4["daily_taxable_income"] = 0; p4["last_tax_date"] = "2026-09-11"; p4["bankruptcy_state"] = GameRules.BANKRUPTCY_NORMAL; p4["tax_debt"] = 0; game.players_state[4] = p4
 	var toast_count: int = game.game_ui.toast_container.get_child_count()
 	check(game._check_player_tax(4) and String(game.notifications[0]["event_type"]) == "daily_tax" and int(game.notifications[0]["amount"]) == 0, "tax=0 仍生成 daily_tax 邮箱记录")
 	check(game.game_ui.toast_container.get_child_count() > toast_count, "每日税收结算一定显示 Toast")
 	game.game_ui.update_game_state(1, game.players_state, game.active_player_ids, game.last_rolls, game.notifications)
 	check(_mailbox_contains("【税收】"), "税收消息以税收前缀进入邮箱")
+	check(GameRules.daily_tax(15) == 2 and GameRules.asset_recovery(200) == 140 and GameRules.capture_price(3, 0) == 240, "税收、资产折价与抢占溢价统一使用 round")
+
+	# TAX_DEBT keeps movement/income available while blocking new investments.
+	p2 = game.players_state[2]; p2["coins"] = 0; p2["tax_debt"] = 380; p2["bankruptcy_state"] = GameRules.BANKRUPTCY_TAX_DEBT; p2["action_state"] = GameRules.ACTION_IDLE; game.players_state[2] = p2
+	game.game_ui.update_game_state(2, game.players_state, game.active_player_ids, game.last_rolls, game.notifications)
+	check("预计税款：" in game.game_ui.estimated_tax_label.text and game.game_ui.tax_debt_label.visible and "欠税：380" in game.game_ui.tax_debt_label.text and game.game_ui.repay_tax_button.visible and game.game_ui.asset_management_button.visible, "HUD 明确显示预计税款、欠税金额、处理资产与立即还税")
+	game.local_player_id = 2
+	game._show_asset_management()
+	check(game.game_ui.active_modal == game.game_ui.asset_overlay and game.game_ui.asset_list.get_child_count() > 0, "欠税资产处理窗口列出自己的房产")
+	game.game_ui._close_modal(game.game_ui.asset_overlay)
+	game.local_player_id = 1
+	game.pending_actions[2] = {"type": "shop", "cell_index": 15, "event_id": 9001}
+	check(game.can_player_roll(2) and game._build_property_action(2, 10).is_empty() and not game._host_buy_card(2, GameRules.CARD_BUILD) and not game._host_use_card(2, GameRules.CARD_BUILD, 7), "欠税仍可移动，但不能买房、升级、抢占、强购或买卡")
+	game.pending_actions.erase(2)
+	_set_property(1, 2, 3)
+	var payer: Dictionary = game.players_state[1]; payer["coins"] = 500; payer["bankruptcy_state"] = GameRules.BANKRUPTCY_NORMAL; game.players_state[1] = payer
+	var owner_coins_before := int(game.players_state[2]["coins"])
+	check(game._settle_step_toll(1, 1) and int(game.players_state[1]["coins"]) == 400, "欠税玩家的房产仍向经过者正常收取过路费")
+	check(int(game.players_state[2]["coins"]) == owner_coins_before and int(game.players_state[2]["tax_debt"]) == 380 and "系统收取" in String(game.notifications[0]["message"]), "欠税房主不收过路费且不会自动偿还欠税")
+	p2 = game.players_state[2]; p2["coins"] = 120; game.players_state[2] = p2
+	check(game._host_repay_tax(2) and int(game.players_state[2]["coins"]) == 0 and int(game.players_state[2]["tax_debt"]) == 260, "立即还税按现金与欠税较小值支付")
+	_set_property(7, 2, 4)
+	check(game._host_process_asset(2, 7, "downgrade") and int(game.properties[7]["property_level"]) == 3 and int(game.players_state[2]["tax_debt"]) == 0 and int(game.players_state[2]["coins"]) == 20, "L4 降级按 70% 回收 280，优先还税后余额进现金")
+	p2 = game.players_state[2]; p2["coins"] = 0; p2["tax_debt"] = 500; p2["bankruptcy_state"] = GameRules.BANKRUPTCY_TAX_DEBT; game.players_state[2] = p2
+	_set_property(8, 2, 2); game.properties[8]["capture_count"] = 3
+	check(String(game.properties[8]["property_type"]) == GameRules.PROPERTY_HOTEL and game._host_process_asset(2, 8, "sell"), "酒店可以整块卖给系统还税")
+	check(int(game.properties[8]["owner_id"]) == -1 and int(game.properties[8]["property_level"]) == 0 and int(game.properties[8]["capture_count"]) == 0 and String(game.properties[8]["property_type"]) == GameRules.PROPERTY_HOTEL, "卖地清空产权等级和抢占次数但保留 property_type")
+	var repurchase: Dictionary = game._build_property_action(3, 8)
+	check(String(repurchase.get("type", "")) == "buy" and int(repurchase.get("price", 0)) == 150, "系统收回的酒店地块可再次按酒店 L1 价格购买")
+
+	# Capture uses a fixed 1.2 buyer premium; indebted sellers repay debt first.
+	p2 = game.players_state[2]; p2["coins"] = 0; p2["tax_debt"] = 100; p2["bankruptcy_state"] = GameRules.BANKRUPTCY_TAX_DEBT; game.players_state[2] = p2
+	_set_property(3, 2, 3); game.properties[3]["capture_count"] = 0
+	p3 = game.players_state[3]; p3["coins"] = 1000; p3["bankruptcy_state"] = GameRules.BANKRUPTCY_NORMAL; p3["tax_debt"] = 0; game.players_state[3] = p3
+	check(game._apply_property_action(3, {"type": "capture", "cell_index": 3, "price": 240}), "L3 首次抢占买家支付固定 1.2 溢价 240")
+	check(int(game.players_state[3]["coins"]) == 760 and int(game.players_state[2]["tax_debt"]) == 0 and int(game.players_state[2]["coins"]) == 100 and int(game.properties[3]["capture_count"]) == 1, "卖家基础转手价 200 优先还欠税，余款才进入现金")
+	check(GameRules.capture_price(3, 1) == 480 and GameRules.capture_price(3, 2) == 720, "第二、三次抢占为固定 1.2 溢价且不复利")
+
+	# Offline stamina and hotel-specific rules.
+	p3 = game.players_state[3]; p3["stamina"] = 7; p3["last_stamina_recovery_time"] = tax_time - 2 * 3600; game.players_state[3] = p3
+	game.server_time_override = tax_time
+	check(game._recover_player_stamina(3) and int(game.players_state[3]["stamina"]) == 17, "离线每完整小时恢复 5 活力")
+	p3 = game.players_state[3]; p3["stamina"] = 18; p3["last_stamina_recovery_time"] = tax_time - 2 * 3600; game.players_state[3] = p3
+	check(game._recover_player_stamina(3) and int(game.players_state[3]["stamina"]) == GameRules.MAX_STAMINA, "活力恢复不超过 20 上限")
+	check(GameRules.property_value(4, GameRules.PROPERTY_HOTEL) == 1200 and GameRules.toll_fee(3, GameRules.PROPERTY_HOTEL) == 300 and not GameRules.can_force_buy(GameRules.PROPERTY_HOTEL, 1), "酒店 L1～L4 价值、过路费及禁止强购规则生效")
+	_set_property(8, 2, 4)
+	payer = game.players_state[1]; payer["stamina"] = 10; payer["cell"] = 8; payer["bankruptcy_state"] = GameRules.BANKRUPTCY_NORMAL; game.players_state[1] = payer
+	await game._resolve_property_landing(1, 8, true)
+	check(int(game.players_state[1]["stamina"]) == 8, "最终停在敌方 L3～L4 酒店额外消耗 2 活力")
+	check(not game._card_force_buy(1), "酒店不能使用强购卡")
+
+	# Only exhausted indebted players without any asset become truly bankrupt.
+	for property_index in range(game.properties.size()):
+		if int(game.properties[property_index].get("owner_id", -1)) == 4:
+			game.properties[property_index]["owner_id"] = -1; game.properties[property_index]["property_level"] = 0; game.properties[property_index]["capture_count"] = 0
+	p4 = game.players_state[4]; p4["coins"] = 0; p4["tax_debt"] = 50; p4["bankruptcy_state"] = GameRules.BANKRUPTCY_TAX_DEBT; game.players_state[4] = p4
+	check(game._maybe_declare_tax_bankruptcy(4) and String(game.players_state[4]["bankruptcy_state"]) == GameRules.BANKRUPTCY_BANKRUPT, "没钱、欠税且无可处理资产时才进入真正破产")
 
 	var saved_cell := 14
 	p3 = game.players_state[3]; p3["cell"] = saved_cell; p3["stamina"] = 7; p3["inventory"][GameRules.CARD_BUILD] = 4; p3["coins"] = 1000; p3["daily_taxable_income"] = 100; p3["last_tax_date"] = "2026-09-11"; game.players_state[3] = p3
+	p2 = game.players_state[2]; p2["coins"] = 0; p2["tax_debt"] = 0; p2["bankruptcy_state"] = GameRules.BANKRUPTCY_BANKRUPT; p2["bankrupt_date"] = "2026-09-12"; game.players_state[2] = p2
 	p4 = game.players_state[4]; p4["bankruptcy_state"] = GameRules.BANKRUPTCY_PROTECTED; p4["protection_end_time"] = tax_time + 3600; game.players_state[4] = p4
 	_set_property(14, 3, 4)
 	check(game._save_game(), "Host 使用临时文件原子保存")
 	var restored = (load("res://scenes/main.tscn") as PackedScene).instantiate(); root.add_child(restored); await process_frame
 	restored.is_host = true; restored.save_path = SAVE; restored.save_temp_path = TEMP; restored.server_time_override = game.server_time_override
-	check(restored._load_game(), "Host 可加载 save_version=1 存档")
+	check(restored._load_game(), "Host 可加载并恢复当前版本存档")
 	check(int(restored.players_state[3]["cell"]) == saved_cell and int(restored.players_state[3]["stamina"]) == 7 and int(restored.players_state[3]["inventory"][GameRules.CARD_BUILD]) == 4 and int(restored.properties[14]["property_level"]) == 4, "coins/stamina/cell/cards/房产及永久状态完整恢复")
 	check(String(restored.players_state[2]["bankruptcy_state"]) == GameRules.BANKRUPTCY_BANKRUPT, "Host 重启后破产状态保持")
 	check(int(restored.players_state[4]["protection_end_time"]) - restored.server_time_override == 3600, "Host 重启后保护剩余时间正确")
 	restored._check_player_login(3)
-	check(int(restored.players_state[3]["coins"]) == 990 and String(restored.players_state[3]["last_tax_date"]) == "2026-09-12", "16:30 离线后登录会补结算当日税收")
+	check(int(restored.players_state[3]["coins"]) == 990 and String(restored.players_state[3]["last_tax_date"]) == "2026-09-12", "20:00 离线后登录会补结算当日税收")
 
 	var corrupt = (load("res://scenes/main.tscn") as PackedScene).instantiate(); root.add_child(corrupt); await process_frame
 	corrupt.is_host = true; corrupt.save_path = "user://corrupt-save.json"; corrupt.save_temp_path = "user://corrupt-save.tmp"

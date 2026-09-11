@@ -18,6 +18,9 @@ signal player_target_selected(player_id: int)
 signal force_buy_requested
 signal quiz_answer_requested(option_index: int)
 signal leaderboard_requested
+signal repay_tax_requested
+signal asset_management_requested
+signal asset_action_requested(cell_index: int, action_type: String)
 
 @onready var startup_overlay: Control = $StartupOverlay
 @onready var lobby_status_label: Label = $StartupOverlay/Center/Panel/Content/LobbyStatus
@@ -77,7 +80,15 @@ var active_modal: Control
 var warm_theme: Theme
 var card_is_shop := false
 var shop_coins := 0
+var shop_purchases_blocked := false
 var modal_close_buttons: Dictionary = {}
+var estimated_tax_label: Label
+var tax_debt_label: Label
+var repay_tax_button: Button
+var asset_management_button: Button
+var asset_overlay: PanelContainer
+var asset_list: VBoxContainer
+var selected_player_targets: Array[int] = []
 
 func _ready() -> void:
 	_build_card_and_toast_ui()
@@ -121,6 +132,12 @@ func update_game_state(local_player_id: int, players: Dictionary, _active_player
 	var own_state: Dictionary = players.get(local_player_id, {})
 	coins_label.text = "自己的金币：%d" % int(own_state.get("coins", 0))
 	stamina_label.text = "自己的活力：%d" % int(own_state.get("stamina", 0))
+	estimated_tax_label.text = "预计税款：%d" % GameRules.daily_tax(int(own_state.get("daily_taxable_income", 0)))
+	var tax_debt := int(own_state.get("tax_debt", 0))
+	tax_debt_label.text = "欠税：%d" % tax_debt
+	tax_debt_label.visible = tax_debt > 0
+	repay_tax_button.visible = tax_debt > 0
+	asset_management_button.visible = tax_debt > 0
 	all_players_label.visible = false
 	_latest_inventory = own_state.get("inventory", {}).duplicate(true)
 	cell_label.text = "当前位置：%d" % int(own_state.get("cell", 0))
@@ -141,7 +158,9 @@ func update_game_state(local_player_id: int, players: Dictionary, _active_player
 	if bool(effects.get("toll_free_next_action", false)): effect_text.append("🛡免租")
 	if bool(effects.get("reverse_next_move", false)): effect_text.append("↩反向")
 	if int(effects.get("speed_multiplier_next_move", 1)) > 1: effect_text.append("👟×2")
-	action_status_label.text = ("状态：可行动" if can_roll else ("状态：处理中" if resolving else "状态：活力不足")) + ("  " + " ".join(effect_text) if not effect_text.is_empty() else "")
+	var status_text := "状态：可行动" if can_roll else ("状态：处理中" if resolving else "状态：活力不足")
+	if tax_debt > 0: status_text += "（欠税）"
+	action_status_label.text = status_text + ("  " + " ".join(effect_text) if not effect_text.is_empty() else "")
 	_update_bankruptcy_text()
 	_update_mailbox(notifications)
 
@@ -183,26 +202,28 @@ func show_property_prompt(action: Dictionary) -> void:
 	var price := int(action.get("price", 0))
 	var cell := int(action.get("cell_index", 0))
 	var level := int(action.get("property_level", 0))
+	var property_type := String(action.get("property_type", GameRules.PROPERTY_HOUSE))
+	var type_name := "酒店" if property_type == GameRules.PROPERTY_HOTEL else "住宅"
 	match action_type:
 		"buy":
 			skip_button.visible = true
 			property_title.text = "是否购买该房产？"
-			property_details.text = "格子 %d\n购买价格：%d 金币" % [cell, price]
+			property_details.text = "格子 %d（%s）\n购买价格：%d 金币" % [cell, type_name, price]
 			confirm_button.text = "购买"
 			skip_button.text = "跳过"
 		"upgrade":
 			skip_button.visible = true
 			property_title.text = "是否升级房产？"
-			property_details.text = "格子 %d：L%d → L%d\n升级价格：%d 金币" % [cell, level, level + 1, price]
+			property_details.text = "格子 %d（%s）：L%d → L%d\n升级价格：%d 金币" % [cell, type_name, level, level + 1, price]
 			confirm_button.text = "升级"
 			skip_button.text = "跳过"
 		"capture":
 			skip_button.visible = true
 			property_title.text = "是否抢占该房产？"
-			property_details.text = "房主：Player %d\n房产等级：L%d\n抢占价格：%d 金币" % [int(action.get("owner_id", -1)), level, price]
+			property_details.text = "房主：Player %d\n%s等级：L%d\n抢占价格：%d 金币" % [int(action.get("owner_id", -1)), type_name, level, price]
 			confirm_button.text = "普通抢占"
 			skip_button.text = "放弃"
-			force_buy_button.visible = action_type == "capture" and bool(action.get("force_buy_available", false))
+			force_buy_button.visible = action_type == "capture" and property_type == GameRules.PROPERTY_HOUSE and bool(action.get("force_buy_available", false))
 	confirm_button.disabled = not bool(action.get("can_afford", true))
 	_open_modal(property_overlay)
 
@@ -251,7 +272,7 @@ func show_toll_toast(action: Dictionary, local_player_id: int) -> void:
 	if local_player_id == payer_id:
 		show_toast("经过 Player %d 的 L%d 房产，支付 %d 金币" % [owner_id, level, amount])
 	else:
-		show_toast("Player %d 经过你的 L%d 房产，获得 %d 金币" % [payer_id, level, amount])
+		show_toast("Player %d 支付 %d 金币；因欠税由系统收取" % [payer_id, amount] if bool(action.get("system_collected", false)) else "Player %d 经过你的 L%d 房产，获得 %d 金币" % [payer_id, level, amount])
 
 func show_toast(message: String) -> void:
 	var label := Label.new()
@@ -265,13 +286,14 @@ func show_toast(message: String) -> void:
 	tween.tween_property(label, "modulate:a", 0.0, 0.35)
 	tween.tween_callback(label.queue_free)
 
-func show_shop(inventory: Dictionary, coins: int) -> void:
+func show_shop(inventory: Dictionary, coins: int, purchases_blocked: bool = false) -> void:
 	_latest_inventory = inventory.duplicate(true)
 	shop_coins = coins
+	shop_purchases_blocked = purchases_blocked
 	card_is_shop = true
 	_populate_card_list(true)
 	card_title.text = "卡牌商店"
-	card_coins.text = "金币：%d（余额必须高于价格）" % coins
+	card_coins.text = "欠税期间不能购买卡牌" if purchases_blocked else "金币：%d（余额必须高于价格）" % coins
 	card_close_button.text = "离开商店"
 	_open_modal(card_overlay)
 
@@ -294,12 +316,13 @@ func _populate_card_list(shop_mode: bool) -> void:
 		button.add_theme_font_size_override("font_size", 30)
 		button.disabled = not shop_mode and count <= 0
 		if shop_mode:
-			button.disabled = shop_coins <= GameRules.card_price(card_id)
+			button.disabled = shop_purchases_blocked or shop_coins <= GameRules.card_price(card_id)
 			button.pressed.connect(func() -> void: shop_card_requested.emit(card_id))
 		else:
 			button.pressed.connect(func() -> void:
+				_close_modal(card_overlay)
 				card_selected.emit(card_id)
-				card_overlay.visible = false)
+			)
 		card_list.add_child(button)
 
 func _card_icon(card_id: String) -> String:
@@ -315,6 +338,11 @@ func _build_card_and_toast_ui() -> void:
 	hud.add_child(card_button)
 	bankruptcy_label = Label.new(); bankruptcy_label.position = Vector2(32, 492); bankruptcy_label.size = Vector2(360, 44); bankruptcy_label.add_theme_font_size_override("font_size", 22); hud.add_child(bankruptcy_label)
 	leaderboard_button = Button.new(); leaderboard_button.text = "排行榜"; leaderboard_button.position = Vector2(32, 548); leaderboard_button.size = Vector2(180, 58); leaderboard_button.pressed.connect(func() -> void: leaderboard_requested.emit()); hud.add_child(leaderboard_button)
+	estimated_tax_label = Label.new(); estimated_tax_label.add_theme_font_size_override("font_size", 22); $HUD/InfoPanel/Labels.add_child(estimated_tax_label)
+	tax_debt_label = Label.new(); tax_debt_label.position = Vector2(32, 618); tax_debt_label.size = Vector2(360, 40); tax_debt_label.add_theme_font_size_override("font_size", 25); tax_debt_label.add_theme_color_override("font_color", Color("a84022")); hud.add_child(tax_debt_label)
+	repay_tax_button = Button.new(); repay_tax_button.text = "立即还税"; repay_tax_button.position = Vector2(32, 666); repay_tax_button.size = Vector2(180, 58); repay_tax_button.pressed.connect(func() -> void: repay_tax_requested.emit()); hud.add_child(repay_tax_button)
+	asset_management_button = Button.new(); asset_management_button.text = "处理资产"; asset_management_button.position = Vector2(224, 666); asset_management_button.size = Vector2(180, 58); asset_management_button.pressed.connect(func() -> void: asset_management_requested.emit()); hud.add_child(asset_management_button)
+	_build_asset_ui()
 	toast_container = VBoxContainer.new()
 	toast_container.set_anchors_preset(Control.PRESET_CENTER_TOP)
 	toast_container.offset_left = -350; toast_container.offset_top = 40; toast_container.offset_right = 350; toast_container.offset_bottom = 220
@@ -369,6 +397,7 @@ func _build_card_and_toast_ui() -> void:
 	_add_close_button(leaderboard_overlay, "leaderboard", func() -> void: _close_modal(leaderboard_overlay), true)
 	_add_close_button(selection_overlay, "selection", func() -> void: target_selection_cancelled.emit(), true)
 	_add_close_button(quiz_overlay, "quiz", Callable(), false)
+	_add_close_button(asset_overlay, "asset", func() -> void: _close_modal(asset_overlay), true)
 
 func _update_bankruptcy_text() -> void:
 	if bankruptcy_label == null: return
@@ -377,8 +406,38 @@ func _update_bankruptcy_text() -> void:
 	elif _bankruptcy_state == GameRules.BANKRUPTCY_PROTECTED:
 		var remaining := maxi(0, _protection_end_time - int(Time.get_unix_time_from_system()))
 		bankruptcy_label.text = "破产保护 %02d:%02d:%02d" % [remaining / 3600, (remaining % 3600) / 60, remaining % 60]
+	elif _bankruptcy_state == GameRules.BANKRUPTCY_TAX_DEBT:
+		bankruptcy_label.text = "欠税状态：请还税或处理资产"
 	else:
 		bankruptcy_label.text = "破产状态：正常"
+
+func _build_asset_ui() -> void:
+	asset_overlay = PanelContainer.new()
+	asset_overlay.set_anchors_preset(Control.PRESET_CENTER)
+	asset_overlay.offset_left = -520; asset_overlay.offset_top = -390; asset_overlay.offset_right = 520; asset_overlay.offset_bottom = 390
+	var content := VBoxContainer.new(); asset_overlay.add_child(content)
+	var title := Label.new(); title.text = "欠税资产处理"; title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; title.add_theme_font_size_override("font_size", 34); content.add_child(title)
+	var hint := Label.new(); hint.text = "回收资金优先偿还欠税，剩余部分进入现金"; hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; hint.add_theme_font_size_override("font_size", 22); content.add_child(hint)
+	var scroll := ScrollContainer.new(); scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL; content.add_child(scroll)
+	asset_list = VBoxContainer.new(); asset_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL; scroll.add_child(asset_list)
+	asset_overlay.visible = false
+	add_child(asset_overlay)
+
+func show_asset_management(owned_properties: Array) -> void:
+	for child in asset_list.get_children(): child.queue_free()
+	if owned_properties.is_empty():
+		var empty := Label.new(); empty.text = "没有可处理的房产"; empty.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; asset_list.add_child(empty)
+	for property in owned_properties:
+		var cell_index := int(property.get("cell_index", -1))
+		var level := int(property.get("property_level", 0))
+		var property_type := String(property.get("property_type", GameRules.PROPERTY_HOUSE))
+		var value := GameRules.property_value(level, property_type)
+		var row := HBoxContainer.new()
+		var label := Label.new(); label.size_flags_horizontal = Control.SIZE_EXPAND_FILL; label.text = "%d 号  %s  L%d  价值 %d\n降级回收 %d / 整块出售 %d" % [cell_index, "酒店" if property_type == GameRules.PROPERTY_HOTEL else "住宅", level, value, GameRules.asset_recovery(value) if level > 1 else 0, GameRules.asset_recovery(value)]; row.add_child(label)
+		var downgrade := Button.new(); downgrade.text = "降级"; downgrade.disabled = level <= 1; downgrade.pressed.connect(func() -> void: asset_action_requested.emit(cell_index, "downgrade")); row.add_child(downgrade)
+		var sell := Button.new(); sell.text = "卖给系统"; sell.pressed.connect(func() -> void: asset_action_requested.emit(cell_index, "sell")); row.add_child(sell)
+		asset_list.add_child(row)
+	_open_modal(asset_overlay)
 
 func _build_leaderboard_ui() -> void:
 	leaderboard_overlay = PanelContainer.new(); leaderboard_overlay.set_anchors_preset(Control.PRESET_CENTER_RIGHT); leaderboard_overlay.offset_left = -520; leaderboard_overlay.offset_top = -360; leaderboard_overlay.offset_right = -30; leaderboard_overlay.offset_bottom = 360
@@ -438,7 +497,7 @@ func show_map_target_selector(title: String) -> void:
 	selection_title.text = title
 	selection_details.text = "点击地图中高亮并呼吸的房产"
 	selection_confirm_button.visible = false
-	_open_modal(selection_overlay)
+	_begin_target_selection()
 
 func show_remote_dice_selector() -> void:
 	_clear_selection_choices()
@@ -466,14 +525,22 @@ func _select_remote_roll(value: int, selected_button: Button) -> void:
 
 func show_player_selector(players: Dictionary, target_ids: Array[int]) -> void:
 	_clear_selection_choices()
-	selection_title.text = "请选择均富对象"
-	selection_details.text = "只可选择当前视野内的其他玩家"
+	selected_player_targets.clear()
+	selection_title.text = "请选择两名均富对象"
+	selection_details.text = "选择除自己外的两名视野内玩家（0 / 2）"
 	for player_id in target_ids:
-		var button := Button.new(); button.text = "Player %d\n%d 金币" % [player_id, int(players[player_id]["coins"])]; button.custom_minimum_size = Vector2(150, 72)
+		var button := Button.new(); button.name = "PlayerTarget%d" % player_id; button.text = "Player %d\n%d 金币" % [player_id, int(players[player_id]["coins"])]; button.custom_minimum_size = Vector2(150, 72); button.toggle_mode = true
 		button.pressed.connect(func() -> void: player_target_selected.emit(player_id))
 		selection_choices.add_child(button)
 	selection_confirm_button.visible = false
-	_open_modal(selection_overlay)
+	_begin_target_selection()
+
+func set_selected_player_targets(target_ids: Array[int]) -> void:
+	selected_player_targets = target_ids.duplicate()
+	selection_details.text = "已选择：%s（%d / 2）" % [", ".join(target_ids.map(func(value: int) -> String: return "Player %d" % value)), target_ids.size()]
+	for child in selection_choices.get_children():
+		if child is Button and child.name.begins_with("PlayerTarget"):
+			child.button_pressed = int(child.name.trim_prefix("PlayerTarget")) in target_ids
 
 func show_card_confirmation(title: String, details: String) -> void:
 	_clear_selection_choices()
@@ -492,6 +559,14 @@ func _clear_selection_choices() -> void:
 	for connection in selection_confirm_button.pressed.get_connections():
 		selection_confirm_button.pressed.disconnect(connection.callable)
 	selection_confirm_button.pressed.connect(func() -> void: target_selection_confirmed.emit())
+	selected_player_targets.clear()
+
+func _begin_target_selection() -> void:
+	_close_all_modals()
+	selection_overlay.visible = true
+	selection_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	active_modal = null
+	modal_shade.visible = false
 
 func _update_mailbox(notifications: Array) -> void:
 	for event in notifications:
@@ -565,7 +640,7 @@ func _hide_modal_visual(target: Control) -> void:
 	else: target.visible = false
 
 func _close_all_modals() -> void:
-	for target in [property_overlay, wheel_overlay, card_overlay, mailbox_overlay, leaderboard_overlay, selection_overlay, quiz_overlay]:
+	for target in [property_overlay, wheel_overlay, card_overlay, mailbox_overlay, leaderboard_overlay, selection_overlay, quiz_overlay, asset_overlay]:
 		if target != null: _hide_modal_visual(target)
 	active_modal = null
 	force_buy_button.visible = false
@@ -605,7 +680,7 @@ func _apply_warm_theme() -> void:
 	warm_theme.set_stylebox("normal", "LineEdit", input_style); warm_theme.set_stylebox("focus", "LineEdit", input_style)
 	warm_theme.set_color("font_color", "Label", Color("4b2d18")); warm_theme.set_color("font_color", "Button", Color("4b2d18")); warm_theme.set_color("font_disabled_color", "Button", Color("75634c"))
 	warm_theme.set_color("font_color", "LineEdit", Color("4b2d18"))
-	for root_control in [startup_overlay, hud, property_overlay, wheel_overlay, card_overlay, mailbox_overlay, leaderboard_overlay, selection_overlay, quiz_overlay]:
+	for root_control in [startup_overlay, hud, property_overlay, wheel_overlay, card_overlay, mailbox_overlay, leaderboard_overlay, selection_overlay, quiz_overlay, asset_overlay]:
 		root_control.theme = warm_theme
 		_remove_cold_overrides(root_control)
 	$StartupOverlay/Backdrop.color = Color("f2d99d")

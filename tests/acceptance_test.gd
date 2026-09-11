@@ -40,11 +40,17 @@ func _run() -> void:
 	check(not game.game_ui.card_overlay.visible and game.game_ui.leaderboard_overlay.visible, "打开新主窗口会关闭旧主窗口")
 	game.game_ui.modal_close_buttons["leaderboard"].pressed.emit()
 	check(game.game_ui.active_modal == null and not game.game_ui.modal_shade.visible, "点击 X 后解除模态遮罩")
-	check(game.game_ui.modal_close_buttons.size() == 7 and game.game_ui.modal_close_buttons["property"].disabled and game.game_ui.modal_close_buttons["wheel"].disabled and game.game_ui.modal_close_buttons["quiz"].disabled, "全部主窗口有大号 X 且强制流程不可绕过")
+	check(game.game_ui.modal_close_buttons.size() == 8 and game.game_ui.modal_close_buttons["property"].disabled and game.game_ui.modal_close_buttons["wheel"].disabled and game.game_ui.modal_close_buttons["quiz"].disabled, "全部主窗口有大号 X 且强制流程不可绕过")
 	var warm_panel := game.game_ui.card_overlay.get_theme_stylebox("panel") as StyleBoxFlat
 	check(warm_panel != null and warm_panel.bg_color.a == 1.0 and warm_panel.bg_color.r > warm_panel.bg_color.b and warm_panel.border_width_left >= 3, "主窗口使用不透明暖色背景和棕色边框")
 	check(BoardPath.PSEUDO_3D_ENABLED and BoardPlayer.PSEUDO_3D_ENABLED and BoardPath.BACKGROUND_COLOR.r > BoardPath.BACKGROUND_COLOR.b, "地图、角色与房产启用明亮暖色伪 3D 表现")
 	game.game_ui.hide_all_prompts()
+	_set_property(game, 1, 1, 1)
+	game._on_card_selected(GameRules.CARD_BUILD)
+	check(game.board.selection_active and game.game_ui.selection_overlay.visible and not game.game_ui.modal_shade.visible and game.game_ui.active_modal == null, "建房卡关闭主弹窗后进入可点击地图的非模态目标选择")
+	game._select_cell_target(1)
+	check(game.game_ui.active_modal == game.game_ui.selection_overlay and game.game_ui.modal_shade.visible, "选中地图目标后重新打开模态确认弹窗")
+	game._cancel_card_targeting()
 
 	_set_property(game, 1, 2, 1); _set_property(game, 2, 2, 2)
 	check(game._host_try_roll(1, 3), "开始逐格移动")
@@ -93,9 +99,20 @@ func _run() -> void:
 	game._apply_property_action(1, {"type": "capture", "cell_index": 10, "price": GameRules.capture_price(3, 0)})
 	check(int(game.properties[10]["owner_id"]) == 1 and int(game.properties[10]["property_level"]) == 3, "普通抢占 L3 后仍为 L3")
 	p1 = game.players_state[1]; p1["cell"] = 1; game.players_state[1] = p1; game.player_1.place_at_cell(1, game.board)
-	var before_total := int(game.players_state[1]["coins"]) + int(game.players_state[2]["coins"])
-	check(game._host_use_card(1, GameRules.CARD_EQUALIZE, 2), "均富卡仅对合法目标执行")
-	check(int(game.players_state[1]["coins"]) + int(game.players_state[2]["coins"]) == before_total and absi(int(game.players_state[1]["coins"]) - int(game.players_state[2]["coins"])) <= 1, "均富卡保持总金币并平均分配")
+	game.active_player_ids.assign([1, 2, 3]); game.player_nodes[3].visible = true; game.player_nodes[3].place_at_cell(1, game.board)
+	var p1_before_equalize := int(game.players_state[1]["coins"])
+	var p2_equal: Dictionary = game.players_state[2]; p2_equal["coins"] = 800; game.players_state[2] = p2_equal
+	var p3_equal: Dictionary = game.players_state[3]; p3_equal["coins"] = 3201; game.players_state[3] = p3_equal
+	game._on_card_selected(GameRules.CARD_EQUALIZE)
+	var equalize_first := game.game_ui.selection_choices.get_child(0) as Button
+	var equalize_second := game.game_ui.selection_choices.get_child(1) as Button
+	equalize_first.pressed.emit()
+	check(game.selected_card_targets.size() == 1 and not game.game_ui.modal_shade.visible, "均富卡第一名目标选择时保持地图选择模式")
+	equalize_second.pressed.emit()
+	check(game.selected_card_targets.size() == 2 and game.game_ui.active_modal == game.game_ui.selection_overlay and game.game_ui.modal_shade.visible, "均富卡选择两名不同玩家后进入确认弹窗")
+	game._cancel_card_targeting()
+	check(game._host_use_card(1, GameRules.CARD_EQUALIZE, [2, 3]), "均富卡由使用者选择两个不同的其他玩家")
+	check(int(game.players_state[1]["coins"]) == p1_before_equalize and int(game.players_state[2]["coins"]) == 2001 and int(game.players_state[3]["coins"]) == 2000, "使用者不参与均富且奇数金币给原较穷玩家")
 
 	# Clear one-shot movement cards before deterministic shop test.
 	p1 = game.players_state[1]; p1["forced_next_roll"] = 0; p1["reverse_next_move"] = false; p1["speed_next_move"] = false; p1["cell"] = 14; game.players_state[1] = p1
@@ -114,6 +131,10 @@ func _run() -> void:
 	_respond(game, 1, "shop_close", true); await _wait_idle(game, 1)
 
 	check(not game._host_use_card(1, "fake_card", 0), "Host 拒绝不存在的卡牌")
+	p1 = game.players_state[1]; p1["bankruptcy_state"] = GameRules.BANKRUPTCY_BANKRUPT; game.players_state[1] = p1
+	game._on_card_selected(GameRules.CARD_SPEED)
+	check(_toast_contains(game, "今日已破产，无法使用卡牌") and game.targeting_card_id.is_empty(), "破产玩家点击卡牌会明确提示且不进入目标选择")
+	p1 = game.players_state[1]; p1["bankruptcy_state"] = GameRules.BANKRUPTCY_NORMAL; game.players_state[1] = p1
 	check(game.game_ui.find_children("*", "SpinBox", true, false).is_empty(), "卡牌界面已删除通用数字输入框")
 	var offscreen_cell := -1
 	for cell_index in range(game.properties.size()):

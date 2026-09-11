@@ -63,7 +63,7 @@ func _all_idle() -> bool:
 	return true
 
 func _valid_shared_state() -> bool:
-	return game.active_player_ids.size() == 4 and int(game.players_state[1]["cell"]) == 9 and int(game.players_state[2]["cell"]) == 9 and int(game.players_state[3]["cell"]) == 2 and int(game.players_state[4]["cell"]) == 3 and int(game.players_state[1]["stamina"]) == 19 and int(game.players_state[2]["stamina"]) == 19 and int(game.players_state[3]["stamina"]) == 19 and int(game.players_state[4]["stamina"]) == 19 and int(game.players_state[1]["coins"]) == 1200 and int(game.players_state[2]["coins"]) == 1200
+	return game.active_player_ids.size() == 4 and int(game.players_state[1]["cell"]) == 9 and int(game.players_state[2]["cell"]) == 9 and int(game.players_state[3]["cell"]) == 2 and int(game.players_state[4]["cell"]) == 3 and int(game.players_state[1]["stamina"]) == 19 and int(game.players_state[2]["stamina"]) == 19 and int(game.players_state[3]["stamina"]) == 19 and int(game.players_state[4]["stamina"]) == 19 and int(game.players_state[1]["coins"]) == 1200 and int(game.players_state[2]["coins"]) == 1200 and game.players_state[1].has("tax_debt") and game.players_state[1].has("last_stamina_recovery_time") and String(game.properties[8].get("property_type", "")) == GameRules.PROPERTY_HOTEL
 
 func _wait_action(player_id: int, kind: String, seconds := 5.0) -> bool:
 	return await _wait(func(): return game.pending_actions.has(player_id) and String(game.pending_actions[player_id].get("type", "")) == kind, seconds)

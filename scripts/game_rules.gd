@@ -9,17 +9,25 @@ const ACTION_RESOLVING := "RESOLVING"
 const BANKRUPTCY_NORMAL := "NORMAL"
 const BANKRUPTCY_BANKRUPT := "BANKRUPT"
 const BANKRUPTCY_PROTECTED := "PROTECTED"
+const BANKRUPTCY_TAX_DEBT := "TAX_DEBT"
 const BANKRUPTCY_RELIEF_COINS := 1000
 const BANKRUPTCY_PROTECTION_SECONDS := 5 * 60 * 60
 const DAILY_TAX_RATE := 0.10
-const DAILY_TAX_HOUR := 16
-const DAILY_TAX_MINUTE := 30
-const SAVE_VERSION := 1
+const DAILY_TAX_HOUR := 20
+const DAILY_TAX_MINUTE := 0
+const SAVE_VERSION := 2
+const MAX_STAMINA := 20
+const STAMINA_RECOVERY_PER_HOUR := 5
+const STAMINA_RECOVERY_SECONDS := 60 * 60
 const QUIZ_QUESTION_COUNT := 5
 const QUIZ_REWARD_PER_CORRECT := 40
 const MAX_PROPERTY_LEVEL := 5
 const MAX_CAPTURABLE_PROPERTY_LEVEL := 3
-const CAPTURE_OWNER_SHARE := 0.8
+const CAPTURE_PRICE_MULTIPLIER := 1.2
+const ASSET_SALE_RATE := 0.7
+
+const PROPERTY_HOUSE := "HOUSE"
+const PROPERTY_HOTEL := "HOTEL"
 
 const CELL_START := "START"
 const CELL_PROPERTY := "PROPERTY"
@@ -48,6 +56,10 @@ const CARD_PRICES := {
 
 const BUILD_COSTS := {1: 50, 2: 100, 3: 200, 4: 400, 5: 800}
 const TOLL_FEES := {1: 25, 2: 50, 3: 100, 4: 200, 5: 400}
+const HOTEL_BUILD_COSTS := {1: 150, 2: 300, 3: 600, 4: 1200}
+const HOTEL_TOLL_FEES := {1: 75, 2: 150, 3: 300, 4: 600}
+const HOTEL_MAX_LEVEL := 4
+const HOTEL_CELLS := [8, 14, 21, 29]
 const REWARD_COINS := 100
 const WHEEL_RESULTS := [50, 100, 200, 500, -50, -100]
 const WHEEL_SPIN_DURATION := 3.0
@@ -97,6 +109,8 @@ static func build_player_state(player_id: int) -> Dictionary:
 		"protection_end_time": 0,
 		"daily_taxable_income": 0,
 		"last_tax_date": "",
+		"tax_debt": 0,
+		"last_stamina_recovery_time": int(Time.get_unix_time_from_system()),
 	}
 
 static func build_initial_inventory() -> Dictionary:
@@ -118,32 +132,55 @@ static func build_cells(cell_count: int) -> Array[Dictionary]:
 			"owner_id": -1,
 			"property_level": 0,
 			"capture_count": 0,
+			"property_type": (PROPERTY_HOTEL if index in HOTEL_CELLS else PROPERTY_HOUSE) if MAP_CELL_TYPES[index] == CELL_PROPERTY else "",
 		})
 	return result
 
-static func build_cost(property_level: int) -> int:
-	return int(BUILD_COSTS.get(property_level, 0))
+static func build_cost(property_level: int, property_type: String = PROPERTY_HOUSE) -> int:
+	return int((HOTEL_BUILD_COSTS if property_type == PROPERTY_HOTEL else BUILD_COSTS).get(property_level, 0))
 
-static func toll_fee(property_level: int) -> int:
-	return int(TOLL_FEES.get(property_level, 0))
+static func toll_fee(property_level: int, property_type: String = PROPERTY_HOUSE) -> int:
+	return int((HOTEL_TOLL_FEES if property_type == PROPERTY_HOTEL else TOLL_FEES).get(property_level, 0))
 
-static func purchase_price() -> int:
-	return build_cost(1)
+static func purchase_price(property_type: String = PROPERTY_HOUSE) -> int:
+	return build_cost(1, property_type)
 
-static func upgrade_price(current_property_level: int) -> int:
-	return build_cost(current_property_level + 1)
+static func upgrade_price(current_property_level: int, property_type: String = PROPERTY_HOUSE) -> int:
+	return build_cost(current_property_level + 1, property_type)
 
-static func capture_price(property_level: int, capture_count: int) -> int:
-	return build_cost(property_level) * (capture_count + 1)
+static func capture_base_price(property_level: int, capture_count: int, property_type: String = PROPERTY_HOUSE) -> int:
+	return build_cost(property_level, property_type) * (capture_count + 1)
+
+static func capture_price(property_level: int, capture_count: int, property_type: String = PROPERTY_HOUSE) -> int:
+	return roundi(float(capture_base_price(property_level, capture_count, property_type)) * CAPTURE_PRICE_MULTIPLIER)
+
+static func capture_seller_income(property_level: int, capture_count: int, property_type: String = PROPERTY_HOUSE) -> int:
+	return capture_base_price(property_level, capture_count, property_type)
 
 static func capture_owner_payout(capture_price_value: int) -> int:
-	return roundi(float(capture_price_value) * CAPTURE_OWNER_SHARE)
+	# Compatibility for callers that only have the final buyer price.
+	return roundi(float(capture_price_value) / CAPTURE_PRICE_MULTIPLIER)
 
-static func can_upgrade_property(player_level: int, property_level: int) -> bool:
-	return property_level < MAX_PROPERTY_LEVEL and player_level >= property_level + 1
+static func max_property_level(property_type: String) -> int:
+	return HOTEL_MAX_LEVEL if property_type == PROPERTY_HOTEL else MAX_PROPERTY_LEVEL
 
-static func property_value(property_level: int) -> int:
-	return build_cost(property_level)
+static func can_upgrade_property(player_level: int, property_level: int, property_type: String = PROPERTY_HOUSE) -> bool:
+	return property_level < max_property_level(property_type) and player_level >= property_level + 1
+
+static func property_value(property_level: int, property_type: String = PROPERTY_HOUSE) -> int:
+	return build_cost(property_level, property_type)
+
+static func asset_recovery(value: int) -> int:
+	return roundi(float(value) * ASSET_SALE_RATE)
+
+static func daily_tax(income: int) -> int:
+	return roundi(float(maxi(0, income)) * DAILY_TAX_RATE)
+
+static func hotel_landing_stamina_cost(property_level: int) -> int:
+	return 1 if property_level <= 2 else 2
+
+static func can_force_buy(property_type: String, property_level: int) -> bool:
+	return property_type == PROPERTY_HOUSE and property_level >= 1 and property_level <= MAX_CAPTURABLE_PROPERTY_LEVEL
 
 static func is_wheel_result_valid(result: int) -> bool:
 	return result in WHEEL_RESULTS

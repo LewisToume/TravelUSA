@@ -157,6 +157,7 @@ func _draw() -> void:
 		var cell_type := String(property.get("cell_type", GameRules.CELL_PROPERTY))
 		var owner_id := int(property.get("owner_id", -1))
 		var property_level := int(property.get("property_level", 0))
+		var property_type := String(property.get("property_type", GameRules.PROPERTY_HOUSE))
 		var fill_color := EMPTY_PROPERTY_COLOR
 		if cell_type == GameRules.CELL_START:
 			fill_color = START_COLOR
@@ -191,7 +192,7 @@ func _draw() -> void:
 			var baseline := center + Vector2(-text_size.x * 0.5, text_size.y * 0.32)
 			draw_string(font, baseline, center_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, CELL_BORDER_COLOR)
 		if cell_type == GameRules.CELL_PROPERTY and owner_id >= 1 and property_level >= 1:
-			_draw_building(get_building_anchor(index), owner_id, property_level)
+			_draw_building(get_building_anchor(index), owner_id, property_level, property_type)
 			if building_effects.has(index):
 				_draw_building_effect(get_building_anchor(index), String(building_effects[index]["type"]))
 		if selection_active and cell_type == GameRules.CELL_PROPERTY:
@@ -207,11 +208,12 @@ func _draw_building_effect(anchor: Vector2, effect_type: String) -> void:
 	for offset in [Vector2(-24, -48), Vector2(8, -76), Vector2(30, -38)]:
 		draw_circle(anchor + offset, 16.0, color)
 
-func _draw_building(anchor: Vector2, owner_id: int, level: int) -> void:
+func _draw_building(anchor: Vector2, owner_id: int, level: int, property_type: String = GameRules.PROPERTY_HOUSE) -> void:
 	var color: Color = PLAYER_COLORS[posmod(owner_id - 1, PLAYER_COLORS.size())]
-	var width := 44.0 + float(level) * 9.0
-	var floor_height := 23.0
-	var floors := level if level <= 3 else level + 1
+	var is_hotel := property_type == GameRules.PROPERTY_HOTEL
+	var width := (68.0 if is_hotel else 44.0) + float(level) * (11.0 if is_hotel else 9.0)
+	var floor_height := 27.0 if is_hotel else 23.0
+	var floors := level + 1 if is_hotel else (level if level <= 3 else level + 1)
 	var height := floor_height * float(floors)
 	var body := Rect2(anchor + Vector2(-width * 0.5, -height), Vector2(width, height))
 	var depth := Vector2(16.0, 11.0)
@@ -219,7 +221,12 @@ func _draw_building(anchor: Vector2, owner_id: int, level: int) -> void:
 	draw_colored_polygon(PackedVector2Array([Vector2(body.end.x, body.position.y), body.end, body.end + depth, Vector2(body.end.x, body.position.y) + depth]), color.darkened(0.34))
 	draw_rect(body, color, true)
 	draw_rect(body, CELL_BORDER_COLOR, false, 4.0)
-	if level <= 2:
+	if is_hotel:
+		var roof := PackedVector2Array([body.position + Vector2(-10, 0), body.position + Vector2(10, -20), body.position + Vector2(width + 14, -20), body.position + Vector2(width, 0)])
+		draw_colored_polygon(roof, Color("f7cc72"))
+		draw_polyline(PackedVector2Array([roof[0], roof[1], roof[2], roof[3], roof[0]]), CELL_BORDER_COLOR, 4.0)
+		draw_string(ThemeDB.fallback_font, body.position + Vector2(width * 0.18, -3), "HOTEL", HORIZONTAL_ALIGNMENT_LEFT, -1, 15, CELL_BORDER_COLOR)
+	elif level <= 2:
 		var roof := PackedVector2Array([body.position + Vector2(-8, 0), body.position + Vector2(width * 0.5, -24), body.position + Vector2(width + 8, 0)])
 		draw_colored_polygon(roof, color.lightened(0.18))
 		draw_polyline(PackedVector2Array([roof[0], roof[1], roof[2]]), CELL_BORDER_COLOR, 4.0)
@@ -231,7 +238,7 @@ func _draw_building(anchor: Vector2, owner_id: int, level: int) -> void:
 		var y := body.end.y - 14.0 - floor_index * floor_height
 		draw_rect(Rect2(Vector2(anchor.x - width * 0.27, y - 7), Vector2(11, 13)), Color("d9f3ff"), true)
 		draw_rect(Rect2(Vector2(anchor.x + width * 0.10, y - 7), Vector2(11, 13)), Color("d9f3ff"), true)
-	var level_text := "L%d" % level
+	var level_text := "%s L%d" % ["H" if is_hotel else "", level]
 	draw_string(ThemeDB.fallback_font, anchor + Vector2(-15, 22), level_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 20, color)
 
 
