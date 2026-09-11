@@ -26,6 +26,7 @@ const REWARD_COLOR := Color("f2c94c")
 const WHEEL_COLOR := Color("9b72e8")
 const SHOP_COLOR := Color("f29d49")
 const START_COLOR := Color("65d394")
+const QUIZ_COLOR := Color("42c7c7")
 const CELL_BORDER_COLOR := Color("18323e")
 
 
@@ -164,6 +165,8 @@ func _draw() -> void:
 			fill_color = WHEEL_COLOR
 		elif cell_type == GameRules.CELL_SHOP:
 			fill_color = SHOP_COLOR
+		elif cell_type == GameRules.CELL_QUIZ:
+			fill_color = QUIZ_COLOR
 		draw_rect(rect, fill_color, true)
 		draw_rect(rect, CELL_BORDER_COLOR, false, 6.0)
 		draw_string(font, rect.position + Vector2(10.0, 28.0), str(index), HORIZONTAL_ALIGNMENT_LEFT, -1, 21, CELL_BORDER_COLOR)
@@ -176,6 +179,8 @@ func _draw() -> void:
 			center_text = "起点"
 		elif cell_type == GameRules.CELL_SHOP:
 			center_text = "商店"
+		elif cell_type == GameRules.CELL_QUIZ:
+			center_text = "答题"
 		if not center_text.is_empty():
 			var text_size := font.get_string_size(center_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size)
 			var baseline := center + Vector2(-text_size.x * 0.5, text_size.y * 0.32)

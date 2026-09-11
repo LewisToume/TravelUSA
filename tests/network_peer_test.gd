@@ -11,6 +11,8 @@ func _run() -> void:
 	_parse_arguments()
 	game = (load("res://scenes/main.tscn") as PackedScene).instantiate(); root.add_child(game)
 	await process_frame; await process_frame
+	game.save_path = result_path + ".save"
+	game.save_temp_path = result_path + ".tmp"
 	game.test_mode = true; game.test_wheel_result_override = 200; game.test_wheel_spin_duration = 0.35
 	for player_id in game.player_nodes:
 		game.player_nodes[player_id].move_speed_pixels_per_second = 100000.0
@@ -78,6 +80,9 @@ func _finish(success: bool, detail: String) -> void:
 	var file := FileAccess.open(result_path, FileAccess.WRITE)
 	if file: file.store_line(JSON.stringify({"role": role, "success": success, "detail": detail, "state": game._make_snapshot()}))
 	print("NETWORK RESULT | ", role, " | ", "PASS" if success else "FAIL", " | ", detail)
+	game.is_host = false
+	for path in [result_path + ".save", result_path + ".tmp", result_path + ".save.bak"]:
+		if FileAccess.file_exists(path): DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 	await create_timer(0.2).timeout; quit(0 if success else 1)
 
 func _parse_arguments() -> void:

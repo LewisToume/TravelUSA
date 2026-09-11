@@ -6,6 +6,17 @@ const INITIAL_STAMINA := 20
 const INITIAL_PLAYER_LEVEL := 10
 const ACTION_IDLE := "IDLE"
 const ACTION_RESOLVING := "RESOLVING"
+const BANKRUPTCY_NORMAL := "NORMAL"
+const BANKRUPTCY_BANKRUPT := "BANKRUPT"
+const BANKRUPTCY_PROTECTED := "PROTECTED"
+const BANKRUPTCY_RELIEF_COINS := 1000
+const BANKRUPTCY_PROTECTION_SECONDS := 5 * 60 * 60
+const DAILY_TAX_RATE := 0.10
+const DAILY_TAX_HOUR := 13
+const DAILY_TAX_MINUTE := 20
+const SAVE_VERSION := 1
+const QUIZ_QUESTION_COUNT := 5
+const QUIZ_REWARD_PER_CORRECT := 40
 const MAX_PROPERTY_LEVEL := 5
 const MAX_CAPTURABLE_PROPERTY_LEVEL := 3
 const CAPTURE_OWNER_SHARE := 0.8
@@ -15,6 +26,7 @@ const CELL_PROPERTY := "PROPERTY"
 const CELL_REWARD := "REWARD"
 const CELL_WHEEL := "WHEEL"
 const CELL_SHOP := "SHOP"
+const CELL_QUIZ := "QUIZ"
 
 const CARD_REMOTE_DICE := "remote_dice"
 const CARD_BUILD := "build_card"
@@ -44,21 +56,21 @@ const WHEEL_FULL_SPINS := 6.0
 # The complete 30-cell map layout lives here so board design changes stay data-only.
 const MAP_CELL_TYPES := [
 	CELL_START,     # 0
-	CELL_PROPERTY, CELL_PROPERTY, CELL_PROPERTY, CELL_PROPERTY,
+	CELL_PROPERTY, CELL_PROPERTY, CELL_PROPERTY, CELL_QUIZ,
 	CELL_REWARD,    # 5
-	CELL_PROPERTY, CELL_PROPERTY, CELL_PROPERTY,
+	CELL_QUIZ, CELL_PROPERTY, CELL_PROPERTY,
 	CELL_WHEEL,     # 9
-	CELL_PROPERTY, CELL_PROPERTY,
+	CELL_PROPERTY, CELL_QUIZ,
 	CELL_REWARD,    # 12
-	CELL_PROPERTY, CELL_PROPERTY,
+	CELL_QUIZ, CELL_PROPERTY,
 	CELL_SHOP,      # 15
-	CELL_PROPERTY, CELL_PROPERTY, CELL_PROPERTY,
+	CELL_QUIZ, CELL_PROPERTY, CELL_QUIZ,
 	CELL_REWARD,    # 19
-	CELL_PROPERTY, CELL_PROPERTY,
+	CELL_QUIZ, CELL_PROPERTY,
 	CELL_WHEEL,     # 22
-	CELL_PROPERTY, CELL_PROPERTY, CELL_PROPERTY,
+	CELL_PROPERTY, CELL_QUIZ, CELL_PROPERTY,
 	CELL_REWARD,    # 26
-	CELL_PROPERTY,
+	CELL_QUIZ,
 	CELL_SHOP,      # 28
 	CELL_PROPERTY,  # 29
 ]
@@ -80,6 +92,11 @@ static func build_player_state(player_id: int) -> Dictionary:
 		"last_move_distance": 0,
 		"last_move_was_speed": false,
 		"status_effects": {"toll_free_next_action": false, "reverse_next_move": false, "speed_multiplier_next_move": 1, "forced_next_roll": 0},
+		"bankruptcy_state": BANKRUPTCY_NORMAL,
+		"bankrupt_date": "",
+		"protection_end_time": 0,
+		"daily_taxable_income": 0,
+		"last_tax_date": "",
 	}
 
 static func build_initial_inventory() -> Dictionary:
@@ -124,6 +141,9 @@ static func capture_owner_payout(capture_price_value: int) -> int:
 
 static func can_upgrade_property(player_level: int, property_level: int) -> bool:
 	return property_level < MAX_PROPERTY_LEVEL and player_level >= property_level + 1
+
+static func property_value(property_level: int) -> int:
+	return build_cost(property_level)
 
 static func is_wheel_result_valid(result: int) -> bool:
 	return result in WHEEL_RESULTS

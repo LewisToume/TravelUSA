@@ -49,6 +49,13 @@ var test_wheel_spin_duration := 0.0
 var _random := RandomNumberGenerator.new()
 var targeting_card_id := ""
 var selected_card_target := -1
+var leaderboard_data: Array = []
+var server_time_override := -1
+var save_path := "user://savegame.json"
+var save_temp_path := "user://savegame.tmp"
+var save_load_failed := false
+var _last_time_check := 0
+var _last_autosave_time := 0
 
 func _ready() -> void:
 	_random.randomize()
@@ -81,6 +88,8 @@ func _ready() -> void:
 	game_ui.remote_dice_confirmed.connect(_confirm_remote_dice)
 	game_ui.player_target_selected.connect(_select_player_target)
 	game_ui.force_buy_requested.connect(_request_force_buy_from_property)
+	game_ui.quiz_answer_requested.connect(submit_quiz_answer)
+	game_ui.leaderboard_requested.connect(_show_leaderboard)
 	board.target_cell_selected.connect(_select_cell_target)
 	multiplayer.peer_connected.connect(_on_peer_connected)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
@@ -91,6 +100,12 @@ func _ready() -> void:
 func _process(_delta: float) -> void:
 	if game_is_started and local_player_id > 0:
 		follow_camera.position = _player_node(local_player_id).position
+	if is_host and game_is_started and _server_time() > _last_time_check:
+		_last_time_check = _server_time()
+		_check_protection_expiry()
+		_check_daily_taxes()
+		if _server_time() - _last_autosave_time >= 30:
+			_save_game()
 
 func host_game(port: int = -1) -> bool:
 	var server := ENetMultiplayerPeer.new()
@@ -103,6 +118,9 @@ func host_game(port: int = -1) -> bool:
 	is_host = true
 	local_player_id = 1
 	active_player_ids = [1]
+	_load_game()
+	_check_player_login(1)
+	_check_daily_taxes()
 	game_ui.set_lobby_buttons_enabled(false)
 	game_ui.set_lobby_status("Host 已创建，等待客户端连接（端口 %d）" % target_port)
 	return true
@@ -140,7 +158,16 @@ func can_player_roll(player_id: int) -> bool:
 	if not players_state.has(player_id):
 		return false
 	var state: Dictionary = players_state[player_id]
-	return int(state["stamina"]) > 0 and String(state["action_state"]) == GameRules.ACTION_IDLE
+	return int(state["stamina"]) > 0 and String(state["action_state"]) == GameRules.ACTION_IDLE and String(state.get("bankruptcy_state", GameRules.BANKRUPTCY_NORMAL)) != GameRules.BANKRUPTCY_BANKRUPT
+
+func submit_quiz_answer(option_index: int) -> void:
+	if pending_action.is_empty() or String(pending_action.get("type", "")) != "quiz": return
+	var event_id := int(pending_action["event_id"])
+	if is_host: _host_record_response(local_player_id, event_id, "quiz_answer", option_index == int(pending_action.get("correct", 0)), option_index)
+	else: _request_quiz_answer_rpc.rpc_id(1, event_id, option_index)
+
+func _show_leaderboard() -> void:
+	game_ui.show_leaderboard(leaderboard_data)
 
 func has_local_property_prompt() -> bool:
 	return not pending_action.is_empty() and game_ui.property_overlay.visible
@@ -288,6 +315,7 @@ func _on_peer_connected(peer_id: int) -> void:
 	player_peer_ids[assigned_id] = peer_id
 	if assigned_id not in active_player_ids:
 		active_player_ids.append(assigned_id)
+	_check_player_login(assigned_id)
 	game_is_started = true
 	_assign_local_player.rpc_id(peer_id, assigned_id)
 	_show_world()
@@ -301,7 +329,16 @@ func _on_peer_disconnected(peer_id: int) -> void:
 	if player_id > 1:
 		player_peer_ids.erase(player_id)
 		active_player_ids.erase(player_id)
+		_save_game()
 		_broadcast_state()
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST and is_host:
+		_save_game()
+
+func _exit_tree() -> void:
+	if is_host:
+		_save_game()
 
 func _on_connected_to_server() -> void:
 	game_ui.set_lobby_status("已连接，等待 Host 同步游戏…")
@@ -340,6 +377,12 @@ func _animate_action(player_id: int, action_id: int, start_cell: int, move_dista
 @rpc("authority", "call_remote", "reliable")
 func _show_property_prompt_remote(action: Dictionary) -> void:
 	_show_local_property_prompt(action)
+
+@rpc("authority", "call_remote", "reliable")
+func _show_quiz_question_remote(action: Dictionary) -> void:
+	pending_action = action.duplicate(true)
+	displayed_event_id = int(action["event_id"])
+	game_ui.show_quiz_question(action)
 
 @rpc("authority", "call_local", "reliable")
 func _show_toll_toast_remote(action: Dictionary) -> void:
@@ -425,6 +468,12 @@ func _request_use_card_rpc(card_id: String, target: int) -> void:
 		if not _host_use_card(player_id, card_id, target):
 			_send_private_toast(player_id, "卡牌使用失败：目标或当前状态不符合条件")
 
+@rpc("any_peer", "call_remote", "reliable")
+func _request_quiz_answer_rpc(event_id: int, option_index: int) -> void:
+	if is_host:
+		var player_id := _player_id_for_peer(multiplayer.get_remote_sender_id())
+		_host_record_response(player_id, event_id, "quiz_answer", false, option_index)
+
 func _host_try_roll(requesting_player_id: int, forced_roll: int = -1) -> bool:
 	if not is_host or not game_is_started or not can_player_roll(requesting_player_id):
 		return false
@@ -441,13 +490,14 @@ func _host_try_roll(requesting_player_id: int, forced_roll: int = -1) -> bool:
 	var move_distance := roll * (2 if bool(state.get("speed_next_move", false)) else 1)
 	state["last_move_distance"] = move_distance
 	state["last_move_was_speed"] = move_distance != roll
-	state["toll_free_this_action"] = bool(state.get("toll_free_next_action", false))
-	state["toll_free_next_action"] = false
+	var protected_action := String(state.get("bankruptcy_state", GameRules.BANKRUPTCY_NORMAL)) == GameRules.BANKRUPTCY_PROTECTED and _server_time() < int(state.get("protection_end_time", 0))
+	state["toll_free_this_action"] = false if protected_action else bool(state.get("toll_free_next_action", false))
+	if not protected_action: state["toll_free_next_action"] = false
 	state["reverse_next_move"] = false
 	state["speed_next_move"] = false
 	state["status_effects"]["reverse_next_move"] = false
 	state["status_effects"]["speed_multiplier_next_move"] = 1
-	state["status_effects"]["toll_free_next_action"] = false
+	state["status_effects"]["toll_free_next_action"] = bool(state.get("toll_free_next_action", false))
 	var start_cell := int(state["cell"])
 	var target_cell := posmod(start_cell + direction * move_distance, board.get_cell_count())
 	var action_id := next_action_id
@@ -476,6 +526,9 @@ func _resolve_landing(player_id: int, action_id: int, cell_index: int) -> void:
 	while not bool(animation_done.get(action_id, false)):
 		await get_tree().process_frame
 	animation_done.erase(action_id)
+	if _is_bankrupt(player_id):
+		_finish_player_action(player_id)
+		return
 	var cell_type := String(properties[cell_index]["cell_type"])
 	if cell_type == GameRules.CELL_PROPERTY:
 		await _resolve_property_landing(player_id, cell_index, bool(action_paid_final_toll.get(action_id, false)))
@@ -486,12 +539,16 @@ func _resolve_landing(player_id: int, action_id: int, cell_index: int) -> void:
 		await _resolve_wheel(player_id, cell_index)
 	elif cell_type == GameRules.CELL_SHOP:
 		await _resolve_shop(player_id, cell_index)
+	elif cell_type == GameRules.CELL_QUIZ:
+		await _resolve_quiz(player_id, cell_index)
 	_finish_player_action(player_id)
 
 func _resolve_property_landing(player_id: int, cell_index: int, final_toll_paid: bool) -> void:
+	if _is_bankrupt(player_id): return
 	var property: Dictionary = properties[cell_index]
 	if not final_toll_paid and int(property["owner_id"]) not in [-1, player_id]:
 		_settle_step_toll(player_id, cell_index)
+	if _is_bankrupt(player_id): return
 	var action := _build_property_action(player_id, cell_index)
 	if action.is_empty():
 		return
@@ -506,6 +563,7 @@ func _resolve_property_landing(player_id: int, cell_index: int, final_toll_paid:
 		_broadcast_state()
 
 func _settle_step_toll(player_id: int, cell_index: int) -> bool:
+	if _is_bankrupt(player_id): return false
 	var property: Dictionary = properties[cell_index]
 	if String(property["cell_type"]) != GameRules.CELL_PROPERTY:
 		return false
@@ -514,22 +572,28 @@ func _settle_step_toll(player_id: int, cell_index: int) -> bool:
 	if owner_id == -1 or owner_id == player_id or amount <= 0:
 		return false
 	var payer: Dictionary = players_state[player_id]
+	if String(payer.get("bankruptcy_state", GameRules.BANKRUPTCY_NORMAL)) == GameRules.BANKRUPTCY_PROTECTED and _server_time() < int(payer.get("protection_end_time", 0)):
+		_notify("bankruptcy_protection", player_id, owner_id, cell_index, amount, "Player %d 处于破产保护，免除 %d 金币过路费" % [player_id, amount])
+		_send_private_toast(player_id, "破产保护：免除 %d 金币过路费" % amount)
+		_broadcast_state()
+		return true
 	if bool(payer.get("toll_free_this_action", false)):
 		players_state[player_id] = payer
 		_notify("toll_free", player_id, owner_id, cell_index, amount, "Player %d 使用免租卡，免除 %d 金币过路费" % [player_id, amount])
 		_send_private_toast(player_id, "免租 -%d" % amount)
 		_broadcast_state()
 		return true
+	var actual_payment := _apply_passive_payment(player_id, amount, "toll")
 	var owner: Dictionary = players_state[owner_id]
-	payer["coins"] = int(payer["coins"]) - amount
-	owner["coins"] = int(owner["coins"]) + amount
-	players_state[player_id] = payer
+	owner["coins"] = int(owner["coins"]) + actual_payment
+	owner["daily_taxable_income"] = int(owner.get("daily_taxable_income", 0)) + actual_payment
 	players_state[owner_id] = owner
-	_show_money_popup(player_id, -amount)
-	_show_money_popup(owner_id, amount)
-	var action := {"type": "toll", "payer_id": player_id, "owner_id": owner_id, "cell_index": cell_index, "property_level": int(property["property_level"]), "amount": amount}
-	_notify("toll", player_id, owner_id, cell_index, amount, "Player %d 经过 Player %d 的 L%d 房产，支付 %d 金币" % [player_id, owner_id, int(property["property_level"]), amount])
+	_show_money_popup(player_id, -actual_payment)
+	_show_money_popup(owner_id, actual_payment)
+	var action := {"type": "toll", "payer_id": player_id, "owner_id": owner_id, "cell_index": cell_index, "property_level": int(property["property_level"]), "amount": actual_payment}
+	_notify("toll", player_id, owner_id, cell_index, actual_payment, "Player %d 经过 Player %d 的 L%d 房产，实际支付 %d 金币" % [player_id, owner_id, int(property["property_level"]), actual_payment])
 	_broadcast_state()
+	_save_game()
 	if multiplayer.has_multiplayer_peer():
 		_show_toll_toast_remote.rpc(action)
 	else:
@@ -539,11 +603,13 @@ func _settle_step_toll(player_id: int, cell_index: int) -> bool:
 func _resolve_reward(player_id: int, cell_index: int) -> void:
 	var state: Dictionary = players_state[player_id]
 	state["coins"] = int(state["coins"]) + GameRules.REWARD_COINS
+	state["daily_taxable_income"] = int(state.get("daily_taxable_income", 0)) + GameRules.REWARD_COINS
 	players_state[player_id] = state
 	var action := {"type": "reward", "amount": GameRules.REWARD_COINS, "cell_index": cell_index, "player_id": player_id}
 	last_event = action.duplicate(true)
 	_notify("reward", player_id, -1, cell_index, GameRules.REWARD_COINS, "Player %d 获得奖励 %d 金币" % [player_id, GameRules.REWARD_COINS])
 	await _request_player_decision(player_id, action)
+	_save_game()
 
 func _resolve_wheel(player_id: int, cell_index: int) -> void:
 	var result := _choose_wheel_result()
@@ -558,7 +624,12 @@ func _resolve_wheel(player_id: int, cell_index: int) -> void:
 	_send_wheel_spin(player_id, result, duration)
 	await get_tree().create_timer(duration).timeout
 	var state: Dictionary = players_state[player_id]
-	state["coins"] = int(state["coins"]) + result
+	if result >= 0:
+		state["coins"] = int(state["coins"]) + result
+		state["daily_taxable_income"] = int(state.get("daily_taxable_income", 0)) + result
+	else:
+		_apply_passive_payment(player_id, absi(result), "wheel")
+		state = players_state[player_id]
 	players_state[player_id] = state
 	last_event = action.duplicate(true)
 	_broadcast_state()
@@ -567,6 +638,45 @@ func _resolve_wheel(player_id: int, cell_index: int) -> void:
 	_broadcast_state()
 	await _await_response(player_id, int(action["event_id"]), "wheel_confirm")
 	_close_event(player_id, int(action["event_id"]))
+	_save_game()
+
+func _resolve_quiz(player_id: int, cell_index: int) -> void:
+	if _is_bankrupt(player_id): return
+	var action := {"type": "quiz", "player_id": player_id, "cell_index": cell_index, "event_id": next_event_id, "correct_count": 0, "earned": 0}
+	next_event_id += 1
+	pending_actions[player_id] = action
+	for question_index in range(GameRules.QUIZ_QUESTION_COUNT):
+		if _is_bankrupt(player_id): break
+		var question := QuestionBank.get_question(question_index + player_id)
+		action.merge({"question_number": question_index + 1, "question": question["question"], "options": question["options"], "correct": int(question["correct"])}, true)
+		pending_actions[player_id] = action.duplicate(true)
+		_send_quiz_question(player_id, action)
+		var selected := await _await_quiz_answer(player_id, int(action["event_id"]))
+		if selected == int(question["correct"]):
+			var state: Dictionary = players_state[player_id]
+			state["coins"] = int(state["coins"]) + GameRules.QUIZ_REWARD_PER_CORRECT
+			state["daily_taxable_income"] = int(state.get("daily_taxable_income", 0)) + GameRules.QUIZ_REWARD_PER_CORRECT
+			players_state[player_id] = state
+			action["correct_count"] = int(action["correct_count"]) + 1
+			action["earned"] = int(action["earned"]) + GameRules.QUIZ_REWARD_PER_CORRECT
+		_broadcast_state()
+	_notify("quiz", player_id, -1, cell_index, int(action["earned"]), "Player %d 完成五连答题，获得 %d 金币" % [player_id, int(action["earned"])])
+	_close_event(player_id, int(action["event_id"]))
+	_save_game()
+
+func _send_quiz_question(player_id: int, action: Dictionary) -> void:
+	var peer_id := int(player_peer_ids.get(player_id, 1))
+	if peer_id == 1: _show_quiz_question_remote(action)
+	else: _show_quiz_question_remote.rpc_id(peer_id, action)
+
+func _await_quiz_answer(player_id: int, event_id: int) -> int:
+	while true:
+		var response: Dictionary = action_responses.get(event_id, {})
+		if int(response.get("player_id", -1)) == player_id and String(response.get("type", "")) == "quiz_answer":
+			action_responses.erase(event_id)
+			return int(response.get("option_index", -1))
+		await get_tree().process_frame
+	return -1
 
 func _send_wheel_ready(player_id: int, action: Dictionary) -> void:
 	var peer_id := int(player_peer_ids.get(player_id, 1))
@@ -622,7 +732,7 @@ func _send_shop(player_id: int, action: Dictionary) -> void:
 		_show_shop_remote.rpc_id(peer_id, action, state["inventory"], int(state["coins"]))
 
 func _host_buy_card(player_id: int, card_id: String) -> bool:
-	if not is_host or not pending_actions.has(player_id) or String(pending_actions[player_id].get("type", "")) != "shop" or card_id not in GameRules.CARD_IDS:
+	if not is_host or _is_bankrupt(player_id) or not pending_actions.has(player_id) or String(pending_actions[player_id].get("type", "")) != "shop" or card_id not in GameRules.CARD_IDS:
 		return false
 	var price := GameRules.card_price(card_id)
 	var state: Dictionary = players_state[player_id]
@@ -633,14 +743,16 @@ func _host_buy_card(player_id: int, card_id: String) -> bool:
 	inventory[card_id] = int(inventory.get(card_id, 0)) + 1
 	state["inventory"] = inventory
 	players_state[player_id] = state
+	if int(state["coins"]) == 0: _declare_bankruptcy(player_id, "shop")
 	_notify("shop", player_id, -1, int(pending_actions[player_id].get("cell_index", -1)), -price, "Player %d 在商店购买了%s" % [player_id, String(GameRules.CARD_NAMES[card_id])])
 	_broadcast_state()
 	_send_shop(player_id, pending_actions[player_id])
+	_save_game()
 	return true
 
 func _host_use_card(player_id: int, card_id: String, target: int) -> bool:
 	var resolving_force_buy := card_id == GameRules.CARD_FORCE_BUY and pending_actions.has(player_id) and String(pending_actions[player_id].get("type", "")) == "capture"
-	if not is_host or (not can_player_roll(player_id) and not resolving_force_buy) or card_id not in GameRules.CARD_IDS:
+	if not is_host or _is_bankrupt(player_id) or (not can_player_roll(player_id) and not resolving_force_buy) or card_id not in GameRules.CARD_IDS:
 		return false
 	var state: Dictionary = players_state[player_id]
 	var inventory: Dictionary = state["inventory"]
@@ -684,6 +796,7 @@ func _host_use_card(player_id: int, card_id: String, target: int) -> bool:
 	_broadcast_state()
 	if card_id == GameRules.CARD_REMOTE_DICE:
 		_host_try_roll(player_id, target)
+	_save_game()
 	return true
 
 func _card_notification(player_id: int, card_id: String, target: int) -> String:
@@ -811,13 +924,13 @@ func _await_response(player_id: int, event_id: int, response_type: String) -> bo
 		await get_tree().process_frame
 	return false
 
-func _host_record_response(player_id: int, event_id: int, response_type: String, accepted: bool) -> void:
+func _host_record_response(player_id: int, event_id: int, response_type: String, accepted: bool, option_index: int = -1) -> void:
 	if not is_host or not pending_actions.has(player_id):
 		return
 	var expected: Dictionary = pending_actions[player_id]
 	if int(expected.get("event_id", -1)) != event_id:
 		return
-	action_responses[event_id] = {"player_id": player_id, "type": response_type, "accepted": accepted}
+	action_responses[event_id] = {"player_id": player_id, "type": response_type, "accepted": accepted, "option_index": option_index}
 
 func _close_event(player_id: int, event_id: int) -> void:
 	if pending_actions.has(player_id) and int(pending_actions[player_id].get("event_id", -1)) == event_id:
@@ -866,8 +979,10 @@ func _apply_property_action(player_id: int, action: Dictionary) -> void:
 			property["capture_count"] = int(property["capture_count"]) + 1
 	players_state[player_id] = player
 	properties[cell_index] = property
+	if int(player["coins"]) == 0: _declare_bankruptcy(player_id, "property")
 	var effect_type := "upgrade" if String(action["type"]) == "upgrade" else ("ownership" if String(action["type"]) in ["buy", "capture"] else "upgrade")
 	_broadcast_property_effect(cell_index, effect_type)
+	_save_game()
 
 func _broadcast_property_effect(cell_index: int, effect_type: String) -> void:
 	if multiplayer.has_multiplayer_peer():
@@ -889,6 +1004,174 @@ func _finish_player_action(player_id: int) -> void:
 	_broadcast_state()
 	action_finished.emit(player_id)
 
+func _is_bankrupt(player_id: int) -> bool:
+	return String(players_state[player_id].get("bankruptcy_state", GameRules.BANKRUPTCY_NORMAL)) == GameRules.BANKRUPTCY_BANKRUPT
+
+func _apply_passive_payment(player_id: int, requested: int, reason: String) -> int:
+	var state: Dictionary = players_state[player_id]
+	var actual := mini(maxi(0, int(state.get("coins", 0))), maxi(0, requested))
+	state["coins"] = maxi(0, int(state.get("coins", 0)) - actual)
+	players_state[player_id] = state
+	if int(state["coins"]) == 0 and requested > 0:
+		_declare_bankruptcy(player_id, reason)
+	return actual
+
+func _declare_bankruptcy(player_id: int, _reason: String = "") -> void:
+	var state: Dictionary = players_state[player_id]
+	if String(state.get("bankruptcy_state", GameRules.BANKRUPTCY_NORMAL)) == GameRules.BANKRUPTCY_BANKRUPT: return
+	state["coins"] = 0
+	state["bankruptcy_state"] = GameRules.BANKRUPTCY_BANKRUPT
+	state["bankrupt_date"] = _server_date()
+	state["protection_end_time"] = 0
+	state["action_state"] = GameRules.ACTION_IDLE
+	state["toll_free_this_action"] = false
+	players_state[player_id] = state
+	_notify("bankrupt", player_id, -1, int(state["cell"]), 0, "Player %d 已破产" % player_id)
+	_save_game()
+
+func _check_player_login(player_id: int) -> void:
+	var state: Dictionary = players_state[player_id]
+	if String(state.get("bankruptcy_state", GameRules.BANKRUPTCY_NORMAL)) == GameRules.BANKRUPTCY_BANKRUPT and not String(state.get("bankrupt_date", "")).is_empty() and _server_date() > String(state["bankrupt_date"]):
+		state["coins"] = GameRules.BANKRUPTCY_RELIEF_COINS
+		state["bankruptcy_state"] = GameRules.BANKRUPTCY_PROTECTED
+		state["protection_end_time"] = _server_time() + GameRules.BANKRUPTCY_PROTECTION_SECONDS
+		players_state[player_id] = state
+		_notify("bankruptcy_relief", player_id, -1, int(state["cell"]), GameRules.BANKRUPTCY_RELIEF_COINS, "Player %d 获得 1000 金币破产救济，并进入 5 小时保护期" % player_id)
+		_save_game()
+	elif String(state.get("bankruptcy_state", GameRules.BANKRUPTCY_NORMAL)) == GameRules.BANKRUPTCY_PROTECTED and _server_time() >= int(state.get("protection_end_time", 0)):
+		_end_protection(player_id)
+	_check_player_tax(player_id)
+
+func _check_protection_expiry() -> void:
+	for player_id in active_player_ids:
+		var state: Dictionary = players_state[player_id]
+		if String(state.get("bankruptcy_state", GameRules.BANKRUPTCY_NORMAL)) == GameRules.BANKRUPTCY_PROTECTED and _server_time() >= int(state.get("protection_end_time", 0)):
+			_end_protection(player_id)
+
+func _end_protection(player_id: int) -> void:
+	var state: Dictionary = players_state[player_id]
+	state["bankruptcy_state"] = GameRules.BANKRUPTCY_NORMAL
+	state["protection_end_time"] = 0
+	players_state[player_id] = state
+	_notify("protection_ended", player_id, -1, int(state["cell"]), 0, "Player %d 的破产保护已结束" % player_id)
+	_broadcast_state()
+	_save_game()
+
+func _check_daily_taxes() -> void:
+	for player_id in active_player_ids:
+		_check_player_tax(player_id)
+
+func _check_player_tax(player_id: int) -> bool:
+	var now := _server_datetime()
+	if int(now.hour) < GameRules.DAILY_TAX_HOUR or (int(now.hour) == GameRules.DAILY_TAX_HOUR and int(now.minute) < GameRules.DAILY_TAX_MINUTE): return false
+	var state: Dictionary = players_state[player_id]
+	if String(state.get("last_tax_date", "")) == _server_date(): return false
+	var income := maxi(0, int(state.get("daily_taxable_income", 0)))
+	var requested_tax := floori(float(income) * GameRules.DAILY_TAX_RATE)
+	var actual_tax := _apply_passive_payment(player_id, requested_tax, "daily_tax")
+	state = players_state[player_id]
+	state["daily_taxable_income"] = 0
+	state["last_tax_date"] = _server_date()
+	players_state[player_id] = state
+	_notify("daily_tax", player_id, -1, int(state["cell"]), -actual_tax, "每日税收结算：Player %d 今日收入 %d，缴税 %d" % [player_id, income, actual_tax])
+	_broadcast_state()
+	_save_game()
+	return true
+
+func _server_time() -> int:
+	return server_time_override if server_time_override >= 0 else int(Time.get_unix_time_from_system())
+
+func _server_date() -> String:
+	var value := _server_datetime()
+	return "%04d-%02d-%02d" % [int(value.year), int(value.month), int(value.day)]
+
+func _server_datetime() -> Dictionary:
+	return Time.get_datetime_dict_from_unix_time(server_time_override) if server_time_override >= 0 else Time.get_datetime_dict_from_system()
+
+func _calculate_leaderboard() -> Array:
+	var result: Array = []
+	for player_id in active_player_ids:
+		var property_value := 0
+		for property in properties:
+			if int(property.get("owner_id", -1)) == player_id: property_value += GameRules.property_value(int(property.get("property_level", 0)))
+		var coins := int(players_state[player_id].get("coins", 0))
+		result.append({"player_id": player_id, "coins": coins, "property_value": property_value, "total_wealth": coins + property_value})
+	result.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		if int(a["total_wealth"]) == int(b["total_wealth"]): return int(a["coins"]) > int(b["coins"])
+		return int(a["total_wealth"]) > int(b["total_wealth"]))
+	for index in range(result.size()): result[index]["rank"] = index + 1
+	return result
+
+func _save_game() -> bool:
+	if not is_host or save_load_failed: return false
+	var saved_players := players_state.duplicate(true)
+	for player_id in saved_players:
+		var saved_state: Dictionary = saved_players[player_id]
+		saved_state["action_state"] = GameRules.ACTION_IDLE
+		saved_state["toll_free_this_action"] = false
+		saved_players[player_id] = saved_state
+	var payload := {"save_version": GameRules.SAVE_VERSION, "players_state": saved_players, "properties": properties, "notifications": notifications, "notification_sequence": notification_sequence, "next_event_id": next_event_id}
+	var file := FileAccess.open(save_temp_path, FileAccess.WRITE)
+	if file == null: return false
+	file.store_string(JSON.stringify(payload))
+	file.flush()
+	file.close()
+	var absolute_save := ProjectSettings.globalize_path(save_path)
+	var absolute_temp := ProjectSettings.globalize_path(save_temp_path)
+	var absolute_backup := absolute_save + ".bak"
+	if FileAccess.file_exists(absolute_backup): DirAccess.remove_absolute(absolute_backup)
+	if FileAccess.file_exists(absolute_save) and DirAccess.rename_absolute(absolute_save, absolute_backup) != OK: return false
+	if DirAccess.rename_absolute(absolute_temp, absolute_save) != OK:
+		if FileAccess.file_exists(absolute_backup): DirAccess.rename_absolute(absolute_backup, absolute_save)
+		return false
+	if FileAccess.file_exists(absolute_backup): DirAccess.remove_absolute(absolute_backup)
+	_last_autosave_time = _server_time()
+	return true
+
+func _load_game() -> bool:
+	if not FileAccess.file_exists(save_path): return false
+	var file := FileAccess.open(save_path, FileAccess.READ)
+	if file == null: save_load_failed = true; return false
+	var parser := JSON.new()
+	if parser.parse(file.get_as_text()) != OK:
+		save_load_failed = true
+		return false
+	var parsed = parser.data
+	if not parsed is Dictionary or int(parsed.get("save_version", -1)) != GameRules.SAVE_VERSION:
+		save_load_failed = true
+		return false
+	var loaded := _migrate_and_apply_save(parsed)
+	if not loaded: save_load_failed = true
+	return loaded
+
+func _migrate_and_apply_save(data: Dictionary) -> bool:
+	if int(data.get("save_version", -1)) != GameRules.SAVE_VERSION: return false
+	if not data.get("players_state", null) is Dictionary or not data.get("properties", null) is Array or not data.get("notifications", null) is Array: return false
+	var loaded_players: Dictionary = data["players_state"]
+	for player_id in range(1, 7):
+		var raw_loaded = loaded_players.get(str(player_id), loaded_players.get(player_id, {}))
+		if not raw_loaded is Dictionary: return false
+		var loaded: Dictionary = raw_loaded
+		var state := GameRules.build_player_state(player_id)
+		for key in loaded: state[key] = loaded[key]
+		var inventory: Dictionary = GameRules.build_initial_inventory(); inventory.merge(state.get("inventory", {}), true); state["inventory"] = inventory
+		var effects: Dictionary = GameRules.build_player_state(player_id)["status_effects"]; effects.merge(state.get("status_effects", {}), true); state["status_effects"] = effects
+		state["action_state"] = GameRules.ACTION_IDLE
+		state["toll_free_this_action"] = false
+		players_state[player_id] = state
+	var loaded_properties: Array = data.get("properties", [])
+	if loaded_properties.size() != properties.size(): return false
+	for property in loaded_properties:
+		if not property is Dictionary or not property.has("cell_index") or not property.has("owner_id") or not property.has("property_level") or not property.has("capture_count"): return false
+	properties = loaded_properties.duplicate(true)
+	notifications = data.get("notifications", []).duplicate(true)
+	notification_sequence = int(data.get("notification_sequence", 1))
+	next_event_id = int(data.get("next_event_id", 1))
+	board.set_property_states(properties)
+	for player_id in player_nodes:
+		_player_node(player_id).place_at_cell(int(players_state[player_id]["cell"]), board)
+	return true
+
 func _choose_wheel_result() -> int:
 	if test_mode and GameRules.is_wheel_result_valid(test_wheel_result_override):
 		return test_wheel_result_override
@@ -902,7 +1185,8 @@ func _broadcast_state() -> void:
 		_apply_snapshot(snapshot)
 
 func _make_snapshot() -> Dictionary:
-	return {"players": players_state.duplicate(true), "active_player_ids": active_player_ids.duplicate(), "properties": properties.duplicate(true), "last_rolls": last_rolls.duplicate(true), "last_event": last_event.duplicate(true), "last_wheel_result": last_wheel_result, "notifications": notifications.duplicate(true)}
+	leaderboard_data = _calculate_leaderboard()
+	return {"players": players_state.duplicate(true), "active_player_ids": active_player_ids.duplicate(), "properties": properties.duplicate(true), "last_rolls": last_rolls.duplicate(true), "last_event": last_event.duplicate(true), "last_wheel_result": last_wheel_result, "notifications": notifications.duplicate(true), "leaderboard": leaderboard_data.duplicate(true), "server_time": _server_time()}
 
 func _apply_snapshot(snapshot: Dictionary) -> void:
 	players_state = snapshot["players"].duplicate(true)
@@ -912,6 +1196,7 @@ func _apply_snapshot(snapshot: Dictionary) -> void:
 	last_event = snapshot.get("last_event", {}).duplicate(true)
 	last_wheel_result = int(snapshot.get("last_wheel_result", 0))
 	notifications = snapshot.get("notifications", []).duplicate(true)
+	leaderboard_data = snapshot.get("leaderboard", []).duplicate(true)
 	game_is_started = true
 	_show_world()
 	board.set_property_states(properties)

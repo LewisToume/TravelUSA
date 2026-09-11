@@ -16,6 +16,8 @@ signal target_selection_confirmed
 signal remote_dice_confirmed(value: int)
 signal player_target_selected(player_id: int)
 signal force_buy_requested
+signal quiz_answer_requested(option_index: int)
+signal leaderboard_requested
 
 @onready var startup_overlay: Control = $StartupOverlay
 @onready var lobby_status_label: Label = $StartupOverlay/Center/Panel/Content/LobbyStatus
@@ -59,6 +61,17 @@ var selection_confirm_button: Button
 var selection_cancel_button: Button
 var selected_remote_roll := 0
 var force_buy_button: Button
+var bankruptcy_label: Label
+var leaderboard_button: Button
+var leaderboard_overlay: PanelContainer
+var leaderboard_list: VBoxContainer
+var quiz_overlay: PanelContainer
+var quiz_progress: Label
+var quiz_question: Label
+var quiz_score: Label
+var quiz_options: VBoxContainer
+var _protection_end_time := 0
+var _bankruptcy_state := GameRules.BANKRUPTCY_NORMAL
 
 func _ready() -> void:
 	_build_card_and_toast_ui()
@@ -71,6 +84,10 @@ func _ready() -> void:
 	wheel_overlay.spin_requested.connect(func() -> void: wheel_spin_requested.emit())
 	wheel_overlay.confirmation_requested.connect(func() -> void: wheel_confirmation_requested.emit())
 	show_startup()
+	set_process(true)
+
+func _process(_delta: float) -> void:
+	_update_bankruptcy_text()
 
 func show_startup() -> void:
 	startup_overlay.visible = true
@@ -105,14 +122,18 @@ func update_game_state(local_player_id: int, players: Dictionary, _active_player
 	var resolving := String(own_state.get("action_state", GameRules.ACTION_IDLE)) == GameRules.ACTION_RESOLVING
 	var has_stamina := int(own_state.get("stamina", 0)) > 0
 	var can_roll := has_stamina and not resolving
+	_bankruptcy_state = String(own_state.get("bankruptcy_state", GameRules.BANKRUPTCY_NORMAL))
+	_protection_end_time = int(own_state.get("protection_end_time", 0))
+	if _bankruptcy_state == GameRules.BANKRUPTCY_BANKRUPT: can_roll = false
 	roll_button.disabled = not can_roll
-	roll_button.text = "掷骰子" if can_roll else ("处理中…" if resolving else "活力不足")
+	roll_button.text = "今日已破产" if _bankruptcy_state == GameRules.BANKRUPTCY_BANKRUPT else ("掷骰子" if can_roll else ("处理中…" if resolving else "活力不足"))
 	var effects: Dictionary = own_state.get("status_effects", {})
 	var effect_text: Array[String] = []
 	if bool(effects.get("toll_free_next_action", false)): effect_text.append("🛡免租")
 	if bool(effects.get("reverse_next_move", false)): effect_text.append("↩反向")
 	if int(effects.get("speed_multiplier_next_move", 1)) > 1: effect_text.append("👟×2")
 	action_status_label.text = ("状态：可行动" if can_roll else ("状态：处理中" if resolving else "状态：活力不足")) + ("  " + " ".join(effect_text) if not effect_text.is_empty() else "")
+	_update_bankruptcy_text()
 	_update_mailbox(notifications)
 
 func play_dice_roll(final_roll: int, duration: float) -> void:
@@ -271,6 +292,8 @@ func _build_card_and_toast_ui() -> void:
 	card_button.add_theme_font_size_override("font_size", 28)
 	card_button.pressed.connect(_show_inventory)
 	hud.add_child(card_button)
+	bankruptcy_label = Label.new(); bankruptcy_label.position = Vector2(32, 492); bankruptcy_label.size = Vector2(360, 44); bankruptcy_label.add_theme_font_size_override("font_size", 22); hud.add_child(bankruptcy_label)
+	leaderboard_button = Button.new(); leaderboard_button.text = "排行榜"; leaderboard_button.position = Vector2(32, 548); leaderboard_button.size = Vector2(180, 58); leaderboard_button.pressed.connect(func() -> void: leaderboard_requested.emit()); hud.add_child(leaderboard_button)
 	toast_container = VBoxContainer.new()
 	toast_container.set_anchors_preset(Control.PRESET_CENTER_TOP)
 	toast_container.offset_left = -350; toast_container.offset_top = 40; toast_container.offset_right = 350; toast_container.offset_bottom = 220
@@ -315,6 +338,56 @@ func _build_card_and_toast_ui() -> void:
 	$PropertyOverlay/Center/Panel/Content/Actions.add_child(force_buy_button)
 	force_buy_button.visible = false
 	_build_selection_ui()
+	_build_leaderboard_ui()
+	_build_quiz_ui()
+
+func _update_bankruptcy_text() -> void:
+	if bankruptcy_label == null: return
+	if _bankruptcy_state == GameRules.BANKRUPTCY_BANKRUPT:
+		bankruptcy_label.text = "破产状态：今日已破产"
+	elif _bankruptcy_state == GameRules.BANKRUPTCY_PROTECTED:
+		var remaining := maxi(0, _protection_end_time - int(Time.get_unix_time_from_system()))
+		bankruptcy_label.text = "破产保护 %02d:%02d:%02d" % [remaining / 3600, (remaining % 3600) / 60, remaining % 60]
+	else:
+		bankruptcy_label.text = "破产状态：正常"
+
+func _build_leaderboard_ui() -> void:
+	leaderboard_overlay = PanelContainer.new(); leaderboard_overlay.set_anchors_preset(Control.PRESET_CENTER_RIGHT); leaderboard_overlay.offset_left = -520; leaderboard_overlay.offset_top = -360; leaderboard_overlay.offset_right = -30; leaderboard_overlay.offset_bottom = 360
+	var content := VBoxContainer.new(); leaderboard_overlay.add_child(content)
+	var title := Label.new(); title.text = "财富排行榜"; title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; title.add_theme_font_size_override("font_size", 34); content.add_child(title)
+	leaderboard_list = VBoxContainer.new(); content.add_child(leaderboard_list)
+	var close := Button.new(); close.text = "关闭"; close.pressed.connect(func() -> void: leaderboard_overlay.visible = false); content.add_child(close)
+	leaderboard_overlay.visible = false; add_child(leaderboard_overlay)
+
+func show_leaderboard(entries: Array) -> void:
+	for child in leaderboard_list.get_children(): child.queue_free()
+	for entry in entries:
+		var label := Label.new(); label.text = "%d. Player %d\n   总财富：%d  现金：%d  房产：%d" % [int(entry["rank"]), int(entry["player_id"]), int(entry["total_wealth"]), int(entry["coins"]), int(entry["property_value"])]; label.add_theme_font_size_override("font_size", 22); leaderboard_list.add_child(label)
+	leaderboard_overlay.visible = true
+
+func _build_quiz_ui() -> void:
+	quiz_overlay = PanelContainer.new(); quiz_overlay.set_anchors_preset(Control.PRESET_CENTER); quiz_overlay.offset_left = -420; quiz_overlay.offset_top = -330; quiz_overlay.offset_right = 420; quiz_overlay.offset_bottom = 330
+	var content := VBoxContainer.new(); quiz_overlay.add_child(content)
+	quiz_progress = Label.new(); quiz_progress.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; quiz_progress.add_theme_font_size_override("font_size", 30); content.add_child(quiz_progress)
+	quiz_score = Label.new(); quiz_score.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; content.add_child(quiz_score)
+	quiz_question = Label.new(); quiz_question.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART; quiz_question.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; quiz_question.add_theme_font_size_override("font_size", 26); content.add_child(quiz_question)
+	quiz_options = VBoxContainer.new(); content.add_child(quiz_options)
+	quiz_overlay.visible = false; add_child(quiz_overlay)
+
+func show_quiz_question(action: Dictionary) -> void:
+	quiz_progress.text = "第 %d / %d 题" % [int(action["question_number"]), GameRules.QUIZ_QUESTION_COUNT]
+	quiz_score.text = "当前答对：%d    当前获得：%d 金币" % [int(action.get("correct_count", 0)), int(action.get("earned", 0))]
+	quiz_question.text = String(action["question"])
+	for child in quiz_options.get_children(): child.queue_free()
+	var options: Array = action["options"]
+	for index in range(options.size()):
+		var button := Button.new(); button.text = "[%s] %s" % [String.chr(65 + index), String(options[index])]; button.custom_minimum_size = Vector2(0, 64); button.add_theme_font_size_override("font_size", 23)
+		button.pressed.connect(func() -> void:
+			for sibling in quiz_options.get_children():
+				if sibling is Button: sibling.disabled = true
+			quiz_answer_requested.emit(index))
+		quiz_options.add_child(button)
+	quiz_overlay.visible = true
 
 func _build_selection_ui() -> void:
 	selection_overlay = PanelContainer.new()
@@ -428,3 +501,4 @@ func hide_all_prompts() -> void:
 	wheel_overlay.hide_wheel()
 	card_overlay.visible = false
 	hide_target_selector()
+	quiz_overlay.visible = false

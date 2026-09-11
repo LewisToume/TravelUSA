@@ -14,6 +14,9 @@ func _run() -> void:
 	game.test_mode = true
 	game.test_wheel_spin_duration = 0.1
 	game.dice_animation_duration = 0.1
+	game.save_path = "user://acceptance-save.json"
+	game.save_temp_path = "user://acceptance-save.tmp"
+	_cleanup_test_save()
 	for player_id in game.player_nodes:
 		game.player_nodes[player_id].move_speed_pixels_per_second = 100000.0
 		game.player_nodes[player_id].minimum_step_duration = 0.01
@@ -108,8 +111,14 @@ func _run() -> void:
 	_respond(game, 1, "decision", true); await _wait_idle(game, 1)
 	check(int(game.properties[8]["owner_id"]) == 2 and int(game.players_state[1]["coins"]) == p1_coins, "先确认者获得土地，后确认者不扣金币")
 
+	game.is_host = false
+	_cleanup_test_save()
 	if failures.is_empty(): print("ACCEPTANCE RESULT | PASS | 多人、逐格收费、建筑、商店和卡牌规则通过"); quit(0)
 	else: print("ACCEPTANCE RESULT | FAIL | ", failures); quit(1)
+
+func _cleanup_test_save() -> void:
+	for path in ["user://acceptance-save.json", "user://acceptance-save.tmp", "user://acceptance-save.json.bak"]:
+		if FileAccess.file_exists(path): DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 
 func _all_cards_start_at_one(inventory: Dictionary) -> bool:
 	for card_id in GameRules.CARD_IDS:
