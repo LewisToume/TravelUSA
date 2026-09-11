@@ -4,6 +4,7 @@ signal game_started
 signal state_applied
 signal property_prompted(action: Dictionary)
 signal turn_finished(player_id: int)
+signal toll_acknowledged
 
 @export_range(1, 6, 1) var dice_min_value: int = 1
 @export_range(1, 12, 1) var dice_max_value: int = 6
@@ -30,6 +31,7 @@ var last_wheel_result: int = 0
 var player_peer_ids: Dictionary = {1: 1}
 var test_mode: bool = false
 var test_wheel_result_override: int = 0
+var test_wheel_spin_duration: float = 0.0
 var _local_prompt_active: bool = false
 var _random := RandomNumberGenerator.new()
 
@@ -44,6 +46,8 @@ func _ready() -> void:
 	game_ui.join_requested.connect(func(address: String) -> void: join_game(address))
 	game_ui.roll_requested.connect(_on_roll_requested)
 	game_ui.property_action_requested.connect(submit_property_action)
+	game_ui.wheel_spin_requested.connect(request_wheel_spin)
+	game_ui.wheel_confirmation_requested.connect(confirm_wheel_result)
 	multiplayer.peer_connected.connect(_on_peer_connected)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	multiplayer.connected_to_server.connect(_on_connected_to_server)
@@ -122,6 +126,18 @@ func submit_property_action(accepted: bool) -> void:
 	else:
 		_request_property_action_rpc.rpc_id(1, accepted)
 
+func request_wheel_spin() -> void:
+	if is_host:
+		_host_start_wheel_spin(local_player_id)
+	else:
+		_request_wheel_spin_rpc.rpc_id(1)
+
+func confirm_wheel_result() -> void:
+	if is_host:
+		_host_confirm_wheel(local_player_id)
+	else:
+		_request_wheel_confirmation_rpc.rpc_id(1)
+
 func _on_roll_requested() -> void:
 	if is_host:
 		_host_try_roll(local_player_id)
@@ -174,11 +190,12 @@ func _animate_turn(player_id: int, roll_value: int, start_cell: int) -> void:
 	_refresh_ui()
 	var player := _player_node(player_id)
 	player.place_at_cell(start_cell, board)
-	_animate_player(player, roll_value)
 
-func _animate_player(player: BoardPlayer, roll_value: int) -> void:
-	await player.move_steps(roll_value, board)
-	_refresh_ui()
+
+@rpc("authority", "call_local", "reliable")
+func _animate_step(player_id: int, target_cell: int) -> void:
+	var player := _player_node(player_id)
+	player.queue_step(target_cell, board)
 
 @rpc("authority", "call_remote", "reliable")
 func _show_property_prompt_remote(action: Dictionary) -> void:
@@ -194,6 +211,28 @@ func _show_event_prompt_remote(action: Dictionary) -> void:
 	if can_confirm:
 		property_prompted.emit(action)
 
+@rpc("authority", "call_local", "reliable")
+func _show_toll_prompt_remote(action: Dictionary) -> void:
+	pending_action = action.duplicate(true)
+	var can_confirm := local_player_id == int(action["payer_id"])
+	_local_prompt_active = can_confirm
+	game_ui.show_toll_prompt(action, local_player_id)
+	if can_confirm:
+		property_prompted.emit(action)
+
+@rpc("authority", "call_local", "reliable")
+func _show_wheel_ready_remote(action: Dictionary) -> void:
+	pending_action = action.duplicate(true)
+	game_ui.show_wheel_ready(current_player_id, local_player_id == current_player_id)
+
+@rpc("authority", "call_local", "reliable")
+func _spin_wheel_remote(result: int, duration: float) -> void:
+	game_ui.play_wheel_spin(result, duration)
+
+@rpc("authority", "call_local", "reliable")
+func _show_wheel_result_remote(result: int) -> void:
+	game_ui.show_wheel_result(result, local_player_id == current_player_id, current_player_id)
+
 @rpc("any_peer", "call_remote", "reliable")
 func _request_roll_rpc() -> void:
 	if is_host:
@@ -208,6 +247,16 @@ func _request_test_roll_rpc(forced_roll: int) -> void:
 func _request_property_action_rpc(accepted: bool) -> void:
 	if is_host:
 		_host_resolve_property(_player_id_for_peer(multiplayer.get_remote_sender_id()), accepted)
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_wheel_spin_rpc() -> void:
+	if is_host:
+		_host_start_wheel_spin(_player_id_for_peer(multiplayer.get_remote_sender_id()))
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_wheel_confirmation_rpc() -> void:
+	if is_host:
+		_host_confirm_wheel(_player_id_for_peer(multiplayer.get_remote_sender_id()))
 
 func _host_try_roll(requesting_player_id: int, forced_roll: int = -1) -> void:
 	if not is_host or not game_is_started or phase != "waiting" or requesting_player_id != current_player_id:
@@ -230,13 +279,37 @@ func _host_execute_turn(player_id: int, roll_value: int) -> void:
 		_animate_turn(player_id, roll_value, start_cell)
 	var player := _player_node(player_id)
 	for _step in range(roll_value):
+		var next_cell := (int(players_state[player_id]["cell"]) + 1) % board.get_cell_count()
+		if multiplayer.has_multiplayer_peer():
+			_animate_step.rpc(player_id, next_cell)
+		else:
+			_animate_step(player_id, next_cell)
 		var reached_cell: int = await player.step_reached
 		var state: Dictionary = players_state[player_id]
 		state["cell"] = reached_cell
 		players_state[player_id] = state
 		if _settle_toll(player_id, reached_cell):
-			_broadcast_state()
+			_begin_toll_pause(player_id)
+			await toll_acknowledged
 	_handle_final_cell(player_id)
+
+func _begin_toll_pause(player_id: int) -> void:
+	var toll: Dictionary = last_turn_tolls[-1].duplicate(true)
+	var cell: Dictionary = properties[int(toll["cell_index"])]
+	pending_action = {
+		"type": "toll",
+		"payer_id": player_id,
+		"owner_id": int(toll["owner_id"]),
+		"cell_index": int(toll["cell_index"]),
+		"property_level": int(cell["property_level"]),
+		"amount": int(toll["amount"]),
+	}
+	phase = "toll"
+	_broadcast_state()
+	if multiplayer.has_multiplayer_peer():
+		_show_toll_prompt_remote.rpc(pending_action)
+	else:
+		_show_toll_prompt_remote(pending_action)
 
 func _handle_final_cell(player_id: int) -> void:
 	var cell := int(players_state[player_id]["cell"])
@@ -277,13 +350,40 @@ func _start_reward_event(player_id: int) -> void:
 func _start_wheel_event(player_id: int) -> void:
 	last_wheel_result = _choose_wheel_result()
 	var state: Dictionary = players_state[player_id]
-	state["coins"] = int(state["coins"]) + last_wheel_result
-	players_state[player_id] = state
 	pending_action = {"type": "wheel", "amount": last_wheel_result, "cell_index": int(state["cell"]), "player_id": player_id}
-	last_event = pending_action.duplicate(true)
-	phase = "event"
+	phase = "wheel_ready"
 	_broadcast_state()
-	_broadcast_event_prompt()
+	if multiplayer.has_multiplayer_peer():
+		_show_wheel_ready_remote.rpc(pending_action)
+	else:
+		_show_wheel_ready_remote(pending_action)
+
+func _host_start_wheel_spin(requesting_player_id: int) -> void:
+	if not is_host or phase != "wheel_ready" or requesting_player_id != current_player_id:
+		return
+	phase = "wheel_spinning"
+	_broadcast_state()
+	var duration := test_wheel_spin_duration if test_mode and test_wheel_spin_duration > 0.0 else GameRules.WHEEL_SPIN_DURATION
+	if multiplayer.has_multiplayer_peer():
+		_spin_wheel_remote.rpc(last_wheel_result, duration)
+	else:
+		_spin_wheel_remote(last_wheel_result, duration)
+	await get_tree().create_timer(duration).timeout
+	var state: Dictionary = players_state[current_player_id]
+	state["coins"] = int(state["coins"]) + last_wheel_result
+	players_state[current_player_id] = state
+	last_event = pending_action.duplicate(true)
+	phase = "wheel_result"
+	_broadcast_state()
+	if multiplayer.has_multiplayer_peer():
+		_show_wheel_result_remote.rpc(last_wheel_result)
+	else:
+		_show_wheel_result_remote(last_wheel_result)
+
+func _host_confirm_wheel(requesting_player_id: int) -> void:
+	if not is_host or phase != "wheel_result" or requesting_player_id != current_player_id:
+		return
+	_end_turn()
 
 func _choose_wheel_result() -> int:
 	if test_mode and GameRules.is_wheel_result_valid(test_wheel_result_override):
@@ -312,7 +412,7 @@ func _settle_toll(player_id: int, cell_index: int) -> bool:
 	owner["coins"] = int(owner["coins"]) + amount
 	players_state[player_id] = payer
 	players_state[owner_id] = owner
-	last_turn_tolls.append({"cell_index": cell_index, "payer_id": player_id, "owner_id": owner_id, "amount": amount})
+	last_turn_tolls.append({"cell_index": cell_index, "payer_id": player_id, "owner_id": owner_id, "property_level": int(cell["property_level"]), "amount": amount})
 	return true
 
 func _build_property_action(player_id: int) -> Dictionary:
@@ -344,7 +444,13 @@ func _show_property_prompt_when_ready(action: Dictionary) -> void:
 	property_prompted.emit(action)
 
 func _host_resolve_property(requesting_player_id: int, accepted: bool) -> void:
-	if not is_host or phase not in ["decision", "event"] or pending_action.is_empty() or requesting_player_id != current_player_id:
+	if not is_host or phase not in ["decision", "event", "toll"] or pending_action.is_empty() or requesting_player_id != current_player_id:
+		return
+	if phase == "toll":
+		pending_action = {}
+		phase = "moving"
+		_broadcast_state()
+		toll_acknowledged.emit()
 		return
 	if phase == "decision" and accepted and bool(pending_action.get("can_afford", false)):
 		_apply_property_action(requesting_player_id, pending_action)
@@ -420,7 +526,7 @@ func _apply_snapshot(snapshot: Dictionary) -> void:
 	_refresh_ui()
 	if phase == "waiting" or phase == "moving":
 		_local_prompt_active = false
-		game_ui.hide_property_prompt()
+		game_ui.hide_all_prompts()
 	turn_camera.position = _player_node(current_player_id).position
 	turn_camera.reset_smoothing()
 	state_applied.emit()

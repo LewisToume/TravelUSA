@@ -11,6 +11,8 @@ signal movement_finished(cell_index: int)
 
 var current_cell_index: int = 0
 var is_moving: bool = false
+var _step_queue: Array[int] = []
+var _step_queue_processing: bool = false
 
 
 func _ready() -> void:
@@ -35,6 +37,29 @@ func move_steps(step_count: int, board: BoardPath) -> void:
 
 	is_moving = false
 	movement_finished.emit(current_cell_index)
+
+func move_one_step(target_cell_index: int, board: BoardPath) -> void:
+	if is_moving:
+		return
+	is_moving = true
+	var next_cell := posmod(target_cell_index, board.get_cell_count())
+	await _move_smoothly_to(board.get_cell_position(next_cell) + _player_offset())
+	current_cell_index = next_cell
+	is_moving = false
+	step_reached.emit(current_cell_index)
+	movement_finished.emit(current_cell_index)
+
+func queue_step(target_cell_index: int, board: BoardPath) -> void:
+	_step_queue.append(target_cell_index)
+	if not _step_queue_processing:
+		_process_step_queue(board)
+
+func _process_step_queue(board: BoardPath) -> void:
+	_step_queue_processing = true
+	while not _step_queue.is_empty():
+		var target_cell: int = _step_queue.pop_front()
+		await move_one_step(target_cell, board)
+	_step_queue_processing = false
 
 
 func _move_smoothly_to(target_position: Vector2) -> void:

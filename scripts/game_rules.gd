@@ -1,7 +1,7 @@
 extends RefCounted
 class_name GameRules
 
-const INITIAL_COINS := 10000
+const INITIAL_COINS := 1000
 const INITIAL_PLAYER_LEVEL := 10
 const MAX_PROPERTY_LEVEL := 5
 const MAX_CAPTURABLE_PROPERTY_LEVEL := 3
@@ -16,6 +16,8 @@ const BUILD_COSTS := {1: 50, 2: 100, 3: 200, 4: 400, 5: 800}
 const TOLL_FEES := {1: 25, 2: 50, 3: 100, 4: 200, 5: 400}
 const REWARD_COINS := 100
 const WHEEL_RESULTS := [50, 100, 200, 500, -50, -100]
+const WHEEL_SPIN_DURATION := 3.0
+const WHEEL_FULL_SPINS := 6.0
 
 # The complete 30-cell map layout lives here so board design changes stay data-only.
 const MAP_CELL_TYPES := [

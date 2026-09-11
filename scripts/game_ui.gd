@@ -5,6 +5,8 @@ signal host_requested
 signal join_requested(address: String)
 signal roll_requested
 signal property_action_requested(accepted: bool)
+signal wheel_spin_requested
+signal wheel_confirmation_requested
 
 @onready var startup_overlay: Control = $StartupOverlay
 @onready var lobby_status_label: Label = $StartupOverlay/Center/Panel/Content/LobbyStatus
@@ -24,6 +26,7 @@ signal property_action_requested(accepted: bool)
 @onready var property_details: Label = $PropertyOverlay/Center/Panel/Content/Details
 @onready var confirm_button: Button = $PropertyOverlay/Center/Panel/Content/Actions/ConfirmButton
 @onready var skip_button: Button = $PropertyOverlay/Center/Panel/Content/Actions/SkipButton
+@onready var wheel_overlay: WheelUI = $WheelOverlay
 
 func _ready() -> void:
 	host_button.pressed.connect(func() -> void: host_requested.emit())
@@ -31,12 +34,15 @@ func _ready() -> void:
 	roll_button.pressed.connect(func() -> void: roll_requested.emit())
 	confirm_button.pressed.connect(func() -> void: property_action_requested.emit(true))
 	skip_button.pressed.connect(func() -> void: property_action_requested.emit(false))
+	wheel_overlay.spin_requested.connect(func() -> void: wheel_spin_requested.emit())
+	wheel_overlay.confirmation_requested.connect(func() -> void: wheel_confirmation_requested.emit())
 	show_startup()
 
 func show_startup() -> void:
 	startup_overlay.visible = true
 	hud.visible = false
 	property_overlay.visible = false
+	wheel_overlay.hide_wheel()
 	set_lobby_status("请选择 Host 或 Join")
 
 func show_game() -> void:
@@ -104,5 +110,35 @@ func show_event_prompt(action: Dictionary, can_confirm: bool) -> void:
 	skip_button.visible = false
 	property_overlay.visible = true
 
+func show_toll_prompt(action: Dictionary, local_player_id: int) -> void:
+	var payer_id := int(action["payer_id"])
+	var owner_id := int(action["owner_id"])
+	var amount := int(action["amount"])
+	var level := int(action["property_level"])
+	property_title.text = "过路费"
+	if local_player_id == payer_id:
+		property_details.text = "经过 Player %d 的 L%d 房产\n你支付了 %d 金币" % [owner_id, level, amount]
+		confirm_button.text = "确定"
+		confirm_button.disabled = false
+	else:
+		property_details.text = "Player %d 经过你的 L%d 房产\nPlayer %d 向你支付了 %d 金币" % [payer_id, level, payer_id, amount]
+		confirm_button.text = "等待 Player %d 确认" % payer_id
+		confirm_button.disabled = true
+	skip_button.visible = false
+	property_overlay.visible = true
+
+func show_wheel_ready(current_player_id: int, can_start: bool) -> void:
+	wheel_overlay.show_ready(current_player_id, can_start)
+
+func play_wheel_spin(result: int, duration: float) -> void:
+	wheel_overlay.play_spin(result, duration)
+
+func show_wheel_result(result: int, can_confirm: bool, current_player_id: int) -> void:
+	wheel_overlay.show_result(result, can_confirm, current_player_id)
+
 func hide_property_prompt() -> void:
 	property_overlay.visible = false
+
+func hide_all_prompts() -> void:
+	property_overlay.visible = false
+	wheel_overlay.hide_wheel()

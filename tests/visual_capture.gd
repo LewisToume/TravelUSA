@@ -15,13 +15,21 @@ func _run() -> void:
 	_save_view("res://artifacts/startup_view.png")
 
 	game.test_mode = true
+	game.test_wheel_result_override = 200
+	game.test_wheel_spin_duration = 0.8
 	game.player_1.move_speed_pixels_per_second = 100000.0
 	game.player_1.minimum_step_duration = 0.001
 	game.start_local_test_game()
-	game.request_test_roll(5)
-	while not game.has_local_property_prompt():
+	game.request_test_roll(9)
+	while game.phase != "wheel_ready":
 		await process_frame
 	_save_view("res://artifacts/game_view.png")
+	game.request_wheel_spin()
+	await create_timer(0.16).timeout
+	_save_view("res://artifacts/wheel_spinning_view.png")
+	while game.phase != "wheel_result":
+		await process_frame
+	_save_view("res://artifacts/wheel_result_view.png")
 	quit(0)
 
 

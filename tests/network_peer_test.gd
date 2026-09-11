@@ -16,6 +16,7 @@ func _run() -> void:
 	await process_frame
 	await process_frame
 	_game.test_mode = true
+	_game.test_wheel_spin_duration = 0.25
 	for player in [_game.player_1, _game.player_2]:
 		player.move_speed_pixels_per_second = 100000.0
 		player.minimum_step_duration = 0.001
@@ -37,10 +38,20 @@ func _run_host() -> void:
 		_finish(false, "p2_buy_not_synced")
 		return
 	_game.request_test_roll(30)
+	if not await _wait_prompt_type("toll", 7.0):
+		_finish(false, "p1_toll_prompt_missing")
+		return
+	_game.submit_property_action(true)
 	if not await _wait_prompt_type("upgrade", 7.0):
 		_finish(false, "p1_upgrade_prompt_missing")
 		return
 	_game.submit_property_action(true)
+	if not await _wait_until(func() -> bool: return _game.current_player_id == 2 and _game.phase == "toll", 8.0):
+		_finish(false, "owner_toll_popup_missing")
+		return
+	if "向你支付了 50 金币" not in _game.game_ui.property_details.text:
+		_finish(false, "owner_toll_message_incorrect")
+		return
 	if not await _wait_until(_capture_state_ready, 8.0):
 		_finish(false, "p2_toll_capture_not_synced")
 		return
@@ -74,21 +85,38 @@ func _run_client() -> void:
 		_finish(false, "p1_upgrade_not_synced")
 		return
 	_game.request_test_roll(1)
+	if not await _wait_prompt_type("toll"):
+		_finish(false, "p2_toll_prompt_missing")
+		return
+	if int(_game.players_state[2]["coins"]) != 925:
+		_finish(false, "final_cell_toll_missing")
+		return
+	await create_timer(0.08).timeout
+	_game.submit_property_action(true)
 	if not await _wait_prompt_type("capture"):
 		_finish(false, "p2_capture_prompt_missing")
-		return
-	if int(_game.players_state[2]["coins"]) != 9925:
-		_finish(false, "final_cell_toll_missing")
 		return
 	_game.submit_property_action(true)
 	if not await _wait_until(func() -> bool: return _game.current_player_id == 2 and int(_game.players_state[1]["cell"]) == 5, 8.0):
 		_finish(false, "reward_not_synced")
 		return
 	_game.request_test_roll(7)
-	if not await _wait_prompt_type("wheel") or _game.last_wheel_result != 200:
+	if not await _wait_phase("wheel_ready") or not _game.game_ui.wheel_overlay.visible:
+		_finish(false, "wheel_not_visible")
+		return
+	var start_rotation: float = _game.game_ui.wheel_overlay.wheel_face.rotation
+	_game.request_wheel_spin()
+	if not await _wait_phase("wheel_spinning"):
+		_finish(false, "wheel_did_not_start")
+		return
+	await create_timer(0.08).timeout
+	if is_equal_approx(start_rotation, _game.game_ui.wheel_overlay.wheel_face.rotation):
+		_finish(false, "wheel_did_not_rotate")
+		return
+	if not await _wait_phase("wheel_result") or _game.last_wheel_result != 200:
 		_finish(false, "wheel_result_mismatch")
 		return
-	_game.submit_property_action(true)
+	_game.confirm_wheel_result()
 	if not await _wait_until(_final_state_ready):
 		_finish(false, "final_snapshot_missing")
 		return
@@ -102,8 +130,8 @@ func _final_state_ready() -> bool:
 
 func _validate_final_state() -> bool:
 	var property: Dictionary = _game.properties[2]
-	return int(_game.players_state[1]["coins"]) == 10055 \
-		and int(_game.players_state[2]["coins"]) == 10025 \
+	return int(_game.players_state[1]["coins"]) == 1055 \
+		and int(_game.players_state[2]["coins"]) == 1025 \
 		and int(property["owner_id"]) == 2 \
 		and int(property["property_level"]) == 3 \
 		and int(property["capture_count"]) == 1 \
@@ -113,6 +141,9 @@ func _validate_final_state() -> bool:
 
 func _wait_prompt_type(type: String, timeout_seconds: float = 5.0) -> bool:
 	return await _wait_until(func() -> bool: return _game.has_local_property_prompt() and String(_game.pending_action.get("type", "")) == type, timeout_seconds)
+
+func _wait_phase(expected_phase: String, timeout_seconds: float = 5.0) -> bool:
+	return await _wait_until(func() -> bool: return _game.phase == expected_phase, timeout_seconds)
 
 func _wait_until(predicate: Callable, timeout_seconds: float = 5.0) -> bool:
 	var deadline := Time.get_ticks_msec() + int(timeout_seconds * 1000.0)
