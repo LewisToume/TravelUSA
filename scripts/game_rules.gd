@@ -46,6 +46,14 @@ const ENCOUNTER_BROOM_STAR := "BROOM_STAR"
 const ENCOUNTER_DEBT_COLLECTOR := "DEBT_COLLECTOR"
 const ENCOUNTER_TYPES := [ENCOUNTER_PROPERTY_GUEST, ENCOUNTER_LUCKY_STAR, ENCOUNTER_WEALTH_GOD, ENCOUNTER_BROOM_STAR, ENCOUNTER_DEBT_COLLECTOR]
 const ENCOUNTER_NAMES := {ENCOUNTER_PROPERTY_GUEST: "地产客", ENCOUNTER_LUCKY_STAR: "幸运星", ENCOUNTER_WEALTH_GOD: "财神", ENCOUNTER_BROOM_STAR: "扫把星", ENCOUNTER_DEBT_COLLECTOR: "讨债人"}
+const ENCOUNTER_ICONS := {ENCOUNTER_PROPERTY_GUEST: "🏠", ENCOUNTER_LUCKY_STAR: "⭐", ENCOUNTER_WEALTH_GOD: "💰", ENCOUNTER_BROOM_STAR: "🧹", ENCOUNTER_DEBT_COLLECTOR: "📜"}
+const ENCOUNTER_CELL_TYPES := {
+	5: ENCOUNTER_PROPERTY_GUEST,
+	13: ENCOUNTER_LUCKY_STAR,
+	21: ENCOUNTER_WEALTH_GOD,
+	31: ENCOUNTER_BROOM_STAR,
+	41: ENCOUNTER_DEBT_COLLECTOR,
+}
 const ENCOUNTER_DURATION_STEPS := 15
 const ENCOUNTER_MAX_TRIGGERS := 2
 
@@ -143,6 +151,7 @@ static func build_cells(cell_count: int) -> Array[Dictionary]:
 		result.append({
 			"cell_index": index,
 			"cell_type": MAP_CELL_TYPES[index],
+			"encounter_type": String(ENCOUNTER_CELL_TYPES.get(index, ENCOUNTER_NONE)),
 			"owner_id": -1,
 			"property_level": 0,
 			"capture_count": 0,
@@ -198,6 +207,13 @@ static func can_force_buy(property_type: String, property_level: int) -> bool:
 
 static func encounter_name(encounter_type: String) -> String:
 	return String(ENCOUNTER_NAMES.get(encounter_type, "无"))
+
+static func encounter_icon(encounter_type: String) -> String:
+	return String(ENCOUNTER_ICONS.get(encounter_type, ""))
+
+static func encounter_display_name(encounter_type: String) -> String:
+	var icon := encounter_icon(encounter_type)
+	return (icon + " " if not icon.is_empty() else "") + encounter_name(encounter_type)
 
 static func is_wheel_result_valid(result: int) -> bool:
 	return result in WHEEL_RESULTS

@@ -53,11 +53,18 @@ func _test_map() -> void:
 	check(game.board.get_building_anchor(8).distance_to(game.board.get_cell_position(8)) >= game.board.cell_size * 0.9, "建筑锚点保持在道路外侧")
 
 func _test_encounter_display() -> void:
-	check(game.board.get_cell_display_text(GameRules.CELL_ENCOUNTER) == "奇遇", "ENCOUNTER 格直接显示奇遇")
+	var expected := {
+		5: GameRules.ENCOUNTER_PROPERTY_GUEST, 13: GameRules.ENCOUNTER_LUCKY_STAR,
+		21: GameRules.ENCOUNTER_WEALTH_GOD, 31: GameRules.ENCOUNTER_BROOM_STAR,
+		41: GameRules.ENCOUNTER_DEBT_COLLECTOR,
+	}
+	for cell_index in expected:
+		var encounter_type: String = expected[cell_index]
+		check(String(game.properties[cell_index].get("encounter_type", "")) == encounter_type and game.board.get_cell_display_text(GameRules.CELL_ENCOUNTER, encounter_type) == GameRules.encounter_display_name(encounter_type), "%d 号格直接显示固定奇遇图标和名称" % cell_index)
 	var state: Dictionary = game.players_state[1]
 	state["encounter_type"] = GameRules.ENCOUNTER_PROPERTY_GUEST; state["encounter_remaining_steps"] = 11; state["encounter_trigger_count"] = 1; game.players_state[1] = state
 	game.game_ui.update_game_state(1, game.players_state, game.active_player_ids, game.last_rolls)
-	check("地产客" in game.game_ui.encounter_label.text and "剩余 11 格" in game.game_ui.encounter_label.text and "剩余触发 1 次" in game.game_ui.encounter_label.text, "HUD 显示奇遇、剩余格数和剩余触发次数")
+	check("🏠 地产客" in game.game_ui.encounter_label.text and "剩余 11 格" in game.game_ui.encounter_label.text and "抢占优惠剩余 1 次" in game.game_ui.encounter_label.text, "HUD 显示奇遇图标、剩余格数和具体剩余触发次数")
 
 func _test_offline_leaderboard() -> void:
 	var p2: Dictionary = game.players_state[2]; p2["coins"] = 2000; game.players_state[2] = p2
@@ -102,7 +109,7 @@ func _test_save_compatibility() -> void:
 	check(not reset_game._load_game() and not reset_game.save_load_failed, "旧 save_version 自动失效且不会当作损坏存档")
 	var new_file := FileAccess.open(OLD_SAVE, FileAccess.READ); var parsed = JSON.parse_string(new_file.get_as_text()); new_file.close()
 	check(int(parsed["save_version"]) == GameRules.SAVE_VERSION and int(reset_game.players_state[1]["coins"]) == GameRules.INITIAL_COINS and reset_game.properties.size() == 50, "旧存档被全新 50 格存档替换")
-	check(String(reset_game.properties[5]["cell_type"]) == GameRules.CELL_ENCOUNTER, "旧存档不能覆盖新版 cell_type")
+	check(String(reset_game.properties[5]["cell_type"]) == GameRules.CELL_ENCOUNTER and String(reset_game.properties[5]["encounter_type"]) == GameRules.ENCOUNTER_PROPERTY_GUEST, "旧存档不能覆盖新版 cell_type 与固定奇遇类型")
 	reset_game.is_host = false
 
 func _rank_entry(entries: Array, player_id: int) -> Dictionary:

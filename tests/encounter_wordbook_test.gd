@@ -20,7 +20,7 @@ func _run() -> void:
 	_test_parsers_and_room_book()
 	_test_question_generation()
 	await _test_quiz_run()
-	_test_encounters()
+	await _test_encounters()
 	await _test_persistence_and_snapshot()
 	game.is_host = false
 	_cleanup()
@@ -84,8 +84,15 @@ func _test_quiz_run() -> void:
 
 func _test_encounters() -> void:
 	var state: Dictionary
+	var fixed_types := {
+		5: GameRules.ENCOUNTER_PROPERTY_GUEST, 13: GameRules.ENCOUNTER_LUCKY_STAR,
+		21: GameRules.ENCOUNTER_WEALTH_GOD, 31: GameRules.ENCOUNTER_BROOM_STAR,
+		41: GameRules.ENCOUNTER_DEBT_COLLECTOR,
+	}
+	for cell_index in fixed_types:
+		check(String(game.properties[cell_index]["encounter_type"]) == String(fixed_types[cell_index]), "%d 号奇遇格固定为%s" % [cell_index, GameRules.encounter_name(fixed_types[cell_index])])
 	# 地产客：住宅抢占半价，最多两次，酒店无效。
-	_set_encounter(1, GameRules.ENCOUNTER_PROPERTY_GUEST)
+	await _acquire_encounter(1, 5)
 	_set_property(1, 2, 1, GameRules.PROPERTY_HOUSE); _set_property(2, 2, 2, GameRules.PROPERTY_HOUSE); _set_property(3, 2, 1, GameRules.PROPERTY_HOUSE)
 	state = game.players_state[1]; state["coins"] = 5000; game.players_state[1] = state
 	check(game._capture_price_for_player(1, game.properties[1]) == roundi(GameRules.capture_price(1, 0) * 0.5), "地产客使普通住宅抢占价格减半")
@@ -95,19 +102,24 @@ func _test_encounters() -> void:
 	_set_property(8, 2, 1, GameRules.PROPERTY_HOTEL)
 	check(game._capture_price_for_player(1, game.properties[8]) == GameRules.capture_price(1, 0, GameRules.PROPERTY_HOTEL), "地产客对 HOTEL 无效")
 
-	# 幸运星：立即两张卡，路过自己的住宅免费升级两次，并与建房卡互斥。
-	_clear_encounter(1); state = game.players_state[1]; state["inventory"] = _empty_inventory(); game.players_state[1] = state
-	game.test_encounter_override = GameRules.ENCOUNTER_LUCKY_STAR; game._resolve_encounter(1, 5)
+	# 幸运星：新奇遇替换旧奇遇，立即两张卡，路过自己的住宅免费升级两次。
+	state = game.players_state[1]; state["inventory"] = _empty_inventory(); game.players_state[1] = state
+	await _acquire_encounter(1, 13)
+	check(game._encounter_type(1) == GameRules.ENCOUNTER_LUCKY_STAR and int(game.players_state[1]["encounter_remaining_steps"]) == 15 and int(game.players_state[1]["encounter_trigger_count"]) == 0, "新奇遇立即替换旧奇遇并重置持续状态")
 	check(_inventory_total(game.players_state[1]["inventory"]) == 2, "幸运星立即随机获得两张卡")
 	_set_property(4, 1, 1, GameRules.PROPERTY_HOUSE); _set_property(6, 1, 1, GameRules.PROPERTY_HOUSE); _set_property(7, 1, 1, GameRules.PROPERTY_HOUSE)
-	game._process_encounter_step(1, 4, false); game._process_encounter_step(1, 6, false); game._process_encounter_step(1, 7, false)
-	check(int(game.properties[4]["property_level"]) == 2 and int(game.properties[6]["property_level"]) == 2 and int(game.properties[7]["property_level"]) == 1, "幸运星免费升级自己的 HOUSE 且最多两次")
 	state = game.players_state[1]; state["inventory"][GameRules.CARD_BUILD] = 1; game.players_state[1] = state
-	check(not game._host_use_card(1, GameRules.CARD_BUILD, 4) and int(game.players_state[1]["inventory"][GameRules.CARD_BUILD]) == 1, "幸运星期间建房卡不可使用且不扣库存")
+	check(not game._host_use_card(1, GameRules.CARD_BUILD, 4) and int(game.players_state[1]["inventory"][GameRules.CARD_BUILD]) == 1, "幸运星尚有免费升级次数时建房卡不可使用且不扣库存")
+	var lucky_coins := int(game.players_state[1]["coins"]); var lucky_cards := _inventory_total(game.players_state[1]["inventory"])
+	game._process_encounter_step(1, 4, false); game._process_encounter_step(1, 6, false); game._process_encounter_step(1, 7, false)
+	check(int(game.properties[4]["property_level"]) == 2 and int(game.properties[6]["property_level"]) == 2 and int(game.properties[7]["property_level"]) == 1, "幸运星经过及最终停在自己的 HOUSE 会真实免费升级且最多两次")
+	check(int(game.players_state[1]["coins"]) == lucky_coins and _inventory_total(game.players_state[1]["inventory"]) == lucky_cards, "幸运星免费升级不扣金币或卡牌")
+	state = game.players_state[1]; state["cell"] = 4; game.players_state[1] = state; game._player_node(1).place_at_cell(4, game.board)
+	check(game._host_use_card(1, GameRules.CARD_BUILD, 4) and int(game.properties[4]["property_level"]) == 3, "两次免费升级用完后建房卡恢复正常")
 
 	# 财神：立即应税收入并免租，免租卡保持独立。
-	_clear_encounter(1); state = game.players_state[1]; state["coins"] = 1000; state["daily_taxable_income"] = 0; state["inventory"][GameRules.CARD_TOLL_FREE] = 1; game.players_state[1] = state
-	game.test_encounter_override = GameRules.ENCOUNTER_WEALTH_GOD; game._resolve_encounter(1, 12)
+	state = game.players_state[1]; state["coins"] = 1000; state["daily_taxable_income"] = 0; state["inventory"][GameRules.CARD_TOLL_FREE] = 1; game.players_state[1] = state
+	await _acquire_encounter(1, 21)
 	var wealth_gain := int(game.players_state[1]["coins"]) - 1000
 	check(wealth_gain >= 100 and wealth_gain <= 999 and int(game.players_state[1]["daily_taxable_income"]) == wealth_gain, "财神立即获得 100～999 金币且计税")
 	_set_property(10, 2, 3, GameRules.PROPERTY_HOUSE); var before_toll := int(game.players_state[1]["coins"])
@@ -115,15 +127,17 @@ func _test_encounters() -> void:
 	check(not game._host_use_card(1, GameRules.CARD_TOLL_FREE, 0) and int(game.players_state[1]["inventory"][GameRules.CARD_TOLL_FREE]) == 1, "财神期间免租卡不可使用且不扣库存")
 
 	# 扫把星：总卡数向上取半，并禁止所有房产投资。
-	_clear_encounter(1); state = game.players_state[1]; state["inventory"] = _empty_inventory(); state["inventory"][GameRules.CARD_SPEED] = 9; game.players_state[1] = state
-	game.test_encounter_override = GameRules.ENCOUNTER_BROOM_STAR; game._resolve_encounter(1, 19)
+	state = game.players_state[1]; state["inventory"] = _empty_inventory(); state["inventory"][GameRules.CARD_SPEED] = 9; game.players_state[1] = state
+	await _acquire_encounter(1, 31)
 	check(_inventory_total(game.players_state[1]["inventory"]) == 5, "扫把星将九张卡减半并向上取整为五张")
 	_set_property(11, -1, 0, GameRules.PROPERTY_HOUSE)
 	check(game._build_property_action(1, 11).is_empty(), "扫把星期间不能买房、升级、抢占或强购")
+	state = game.players_state[1]; state["inventory"][GameRules.CARD_BUILD] = 1; state["inventory"][GameRules.CARD_FORCE_BUY] = 1; game.players_state[1] = state
+	check(not game._host_use_card(1, GameRules.CARD_BUILD, 4) and not game._host_use_card(1, GameRules.CARD_FORCE_BUY, 0), "扫把星期间建房卡与强购卡均被 Host 拒绝")
 
 	# 讨债人：即时损失，自己支付的租金和抢占费翻倍。
-	_clear_encounter(1); state = game.players_state[1]; state["coins"] = 3000; state["bankruptcy_state"] = GameRules.BANKRUPTCY_NORMAL; state["toll_free_this_action"] = false; game.players_state[1] = state
-	game.test_encounter_override = GameRules.ENCOUNTER_DEBT_COLLECTOR; game._resolve_encounter(1, 26)
+	state = game.players_state[1]; state["coins"] = 3000; state["bankruptcy_state"] = GameRules.BANKRUPTCY_NORMAL; state["toll_free_this_action"] = false; game.players_state[1] = state
+	await _acquire_encounter(1, 41)
 	var debt_loss := 3000 - int(game.players_state[1]["coins"])
 	check(debt_loss >= 100 and debt_loss <= 999, "讨债人立即损失 100～999 金币且不低于零")
 	_set_property(14, 2, 1, GameRules.PROPERTY_HOUSE)
@@ -131,15 +145,23 @@ func _test_encounters() -> void:
 	var toll_before := int(game.players_state[1]["coins"]); game._settle_step_toll(1, 14)
 	check(toll_before - int(game.players_state[1]["coins"]) == GameRules.toll_fee(1) * 2, "讨债人使自己支付的过路费翻倍")
 
-	# 生命周期：同一时间仅一个，15 格或跨日结束。
-	var current: String = game._encounter_type(1); game.test_encounter_override = GameRules.ENCOUNTER_WEALTH_GOD; game._resolve_encounter(1, 5)
-	check(game._encounter_type(1) == current, "当前奇遇未结束时不会叠加第二个")
+	# 生命周期：踩新格替换，15 格或跨日结束。
+	await _acquire_encounter(1, 5)
+	check(game._encounter_type(1) == GameRules.ENCOUNTER_PROPERTY_GUEST and int(game.players_state[1]["encounter_remaining_steps"]) == 15, "已有奇遇时踩新格会立即替换")
 	state = game.players_state[1]; state["encounter_remaining_steps"] = 1; game.players_state[1] = state
 	game._process_encounter_step(1, 0, false)
 	check(game._encounter_type(1) == GameRules.ENCOUNTER_NONE, "奇遇累计移动 15 格后结束")
 	_set_encounter(1, GameRules.ENCOUNTER_WEALTH_GOD); state = game.players_state[1]; state["encounter_start_date"] = "2026-09-11"; game.players_state[1] = state
 	game.server_time_override = Time.get_unix_time_from_datetime_dict({"year": 2026, "month": 9, "day": 12, "hour": 0, "minute": 1, "second": 0})
 	check(game._expire_encounter_if_needed(1) and game._encounter_type(1) == GameRules.ENCOUNTER_NONE, "奇遇跨过当天 24:00 后结束")
+
+func _acquire_encounter(player_id: int, cell_index: int) -> void:
+	game._resolve_encounter(player_id, cell_index)
+	check(await _wait(func(): return game.pending_actions.has(player_id) and String(game.pending_actions[player_id].get("type", "")) == "encounter"), "获得奇遇时显示确认弹窗")
+	if game.pending_actions.has(player_id):
+		var action: Dictionary = game.pending_actions[player_id]
+		game._host_record_response(player_id, int(action["event_id"]), "decision", true)
+		await _wait(func(): return not game.pending_actions.has(player_id))
 
 func _test_persistence_and_snapshot() -> void:
 	_set_encounter(3, GameRules.ENCOUNTER_LUCKY_STAR)

@@ -47,7 +47,6 @@ var displayed_event_id := 0
 var test_mode := false
 var test_wheel_result_override := 0
 var test_wheel_spin_duration := 0.0
-var test_encounter_override := ""
 var _random := RandomNumberGenerator.new()
 var targeting_card_id := ""
 var selected_card_target := -1
@@ -335,6 +334,14 @@ func _confirm_wordbook_import() -> bool:
 func _on_card_selected(card_id: String) -> void:
 	if _is_bankrupt(local_player_id):
 		game_ui.show_toast("今日已破产，无法使用卡牌")
+		return
+	var encounter_type := _encounter_type(local_player_id)
+	var lucky_build_blocked := encounter_type == GameRules.ENCOUNTER_LUCKY_STAR and card_id == GameRules.CARD_BUILD and int(players_state[local_player_id].get("encounter_trigger_count", 0)) < GameRules.ENCOUNTER_MAX_TRIGGERS
+	if (encounter_type == GameRules.ENCOUNTER_WEALTH_GOD and card_id == GameRules.CARD_TOLL_FREE) or lucky_build_blocked:
+		game_ui.show_toast("当前奇遇已提供此效果，无法使用该卡牌")
+		return
+	if encounter_type == GameRules.ENCOUNTER_BROOM_STAR and card_id in [GameRules.CARD_BUILD, GameRules.CARD_FORCE_BUY]:
+		game_ui.show_toast("扫把星期间不能进行房产投资")
 		return
 	targeting_card_id = card_id
 	selected_card_target = -1
@@ -700,7 +707,7 @@ func _resolve_landing(player_id: int, action_id: int, cell_index: int) -> void:
 	elif cell_type == GameRules.CELL_QUIZ:
 		await _resolve_quiz(player_id, cell_index)
 	elif cell_type == GameRules.CELL_ENCOUNTER:
-		_resolve_encounter(player_id, cell_index)
+		await _resolve_encounter(player_id, cell_index)
 	_finish_player_action(player_id)
 
 func _resolve_property_landing(player_id: int, cell_index: int, final_toll_paid: bool) -> void:
@@ -794,11 +801,13 @@ func _resolve_reward(player_id: int, cell_index: int) -> void:
 	_save_game()
 
 func _resolve_encounter(player_id: int, cell_index: int) -> void:
-	_expire_encounter_if_needed(player_id)
-	if _encounter_type(player_id) != GameRules.ENCOUNTER_NONE:
-		_send_private_toast(player_id, "当前奇遇仍在持续，本次不再获得新奇遇")
+	if cell_index < 0 or cell_index >= properties.size():
 		return
-	var encounter_type := test_encounter_override if test_mode and test_encounter_override in GameRules.ENCOUNTER_TYPES else String(GameRules.ENCOUNTER_TYPES[_random.randi_range(0, GameRules.ENCOUNTER_TYPES.size() - 1)])
+	var encounter_type := String(properties[cell_index].get("encounter_type", GameRules.ENCOUNTER_NONE))
+	if encounter_type not in GameRules.ENCOUNTER_TYPES:
+		return
+	if _encounter_type(player_id) != GameRules.ENCOUNTER_NONE:
+		_expire_encounter(player_id, "被新奇遇替换")
 	var state: Dictionary = players_state[player_id]
 	state["encounter_type"] = encounter_type
 	state["encounter_remaining_steps"] = GameRules.ENCOUNTER_DURATION_STEPS
@@ -806,7 +815,11 @@ func _resolve_encounter(player_id: int, cell_index: int) -> void:
 	state["encounter_start_date"] = _server_date()
 	players_state[player_id] = state
 	var detail := ""
+	var immediate_effect := "无"
+	var persistent_effect := ""
 	match encounter_type:
+		GameRules.ENCOUNTER_PROPERTY_GUEST:
+			persistent_effect = "抢占其他玩家普通住宅时价格减半"
 		GameRules.ENCOUNTER_LUCKY_STAR:
 			state = players_state[player_id]
 			var inventory: Dictionary = state["inventory"]
@@ -818,6 +831,8 @@ func _resolve_encounter(player_id: int, cell_index: int) -> void:
 			state["inventory"] = inventory
 			players_state[player_id] = state
 			detail = "，立即获得%s" % "、".join(received)
+			immediate_effect = "获得2张卡牌（%s）" % "、".join(received)
+			persistent_effect = "经过自己的普通住宅时免费升级"
 		GameRules.ENCOUNTER_WEALTH_GOD:
 			var reward := _random.randi_range(100, 999)
 			state = players_state[player_id]
@@ -825,6 +840,8 @@ func _resolve_encounter(player_id: int, cell_index: int) -> void:
 			state["daily_taxable_income"] = int(state.get("daily_taxable_income", 0)) + reward
 			players_state[player_id] = state
 			detail = "，立即获得 %d 金币" % reward
+			immediate_effect = "获得 %d 金币" % reward
+			persistent_effect = "所有敌方住宅和酒店过路费为0"
 		GameRules.ENCOUNTER_BROOM_STAR:
 			state = players_state[player_id]
 			var inventory: Dictionary = state["inventory"]
@@ -844,14 +861,26 @@ func _resolve_encounter(player_id: int, cell_index: int) -> void:
 			state["inventory"] = inventory
 			players_state[player_id] = state
 			detail = "，卡牌总数由 %d 减为 %d" % [total, keep]
+			immediate_effect = "卡牌总数由 %d 减为 %d" % [total, keep]
+			persistent_effect = "不能买房、升级、抢占、强购或使用相关卡牌"
 		GameRules.ENCOUNTER_DEBT_COLLECTOR:
 			var loss := _random.randi_range(100, 999)
 			var actual := _apply_passive_payment(player_id, loss, "encounter")
 			detail = "，立即损失 %d 金币" % actual
+			immediate_effect = "损失 %d 金币" % actual
+			persistent_effect = "抢占价格和自己支付的过路费翻倍"
 	var name := GameRules.encounter_name(encounter_type)
 	_notify("encounter", player_id, -1, cell_index, 0, "Player %d 获得奇遇【%s】%s" % [player_id, name, detail])
 	_broadcast_state()
 	_save_game()
+	var action := {
+		"type": "encounter", "player_id": player_id, "cell_index": cell_index,
+		"encounter_type": encounter_type, "immediate_effect": immediate_effect,
+		"persistent_effect": persistent_effect,
+		"max_triggers": GameRules.ENCOUNTER_MAX_TRIGGERS if encounter_type in [GameRules.ENCOUNTER_PROPERTY_GUEST, GameRules.ENCOUNTER_LUCKY_STAR] else 0,
+		"duration_steps": GameRules.ENCOUNTER_DURATION_STEPS,
+	}
+	await _request_player_decision(player_id, action)
 
 func _process_encounter_step(player_id: int, cell_index: int, is_final_step: bool) -> void:
 	if _encounter_type(player_id) == GameRules.ENCOUNTER_NONE: return
@@ -865,7 +894,7 @@ func _process_encounter_step(player_id: int, cell_index: int, is_final_step: boo
 			properties[cell_index] = property
 			state["encounter_trigger_count"] = int(state["encounter_trigger_count"]) + 1
 			_broadcast_property_effect(cell_index, "upgrade")
-			_notify("encounter", player_id, -1, cell_index, 0, "幸运星：Player %d 的 %d 号住宅免费升级至 L%d" % [player_id, cell_index, level + 1])
+			_notify("encounter", player_id, -1, cell_index, 0, "幸运星：%d号房产免费升级 L%d → L%d" % [cell_index, level, level + 1])
 	state["encounter_remaining_steps"] = maxi(0, int(state["encounter_remaining_steps"]) - 1)
 	players_state[player_id] = state
 	if int(state["encounter_remaining_steps"]) == 0 and not is_final_step:
@@ -1090,7 +1119,8 @@ func _host_use_card(player_id: int, card_id: String, target: Variant) -> bool:
 		_send_private_toast(player_id, "欠税期间不能升级或强购房产")
 		return false
 	var encounter_type := _encounter_type(player_id)
-	if (encounter_type == GameRules.ENCOUNTER_WEALTH_GOD and card_id == GameRules.CARD_TOLL_FREE) or (encounter_type == GameRules.ENCOUNTER_LUCKY_STAR and card_id == GameRules.CARD_BUILD):
+	var lucky_build_blocked := encounter_type == GameRules.ENCOUNTER_LUCKY_STAR and card_id == GameRules.CARD_BUILD and int(players_state[player_id].get("encounter_trigger_count", 0)) < GameRules.ENCOUNTER_MAX_TRIGGERS
+	if (encounter_type == GameRules.ENCOUNTER_WEALTH_GOD and card_id == GameRules.CARD_TOLL_FREE) or lucky_build_blocked:
 		_send_private_toast(player_id, "当前奇遇已提供此效果，无法使用该卡牌")
 		return false
 	if encounter_type == GameRules.ENCOUNTER_BROOM_STAR and card_id in [GameRules.CARD_BUILD, GameRules.CARD_FORCE_BUY]:
@@ -1273,7 +1303,7 @@ func _assign_event_id(action: Dictionary) -> void:
 func _show_local_property_prompt(action: Dictionary) -> void:
 	pending_action = action.duplicate(true)
 	displayed_event_id = int(action["event_id"])
-	if String(action["type"]) == "reward":
+	if String(action["type"]) in ["reward", "encounter"]:
 		game_ui.show_event_prompt(action, true)
 	else:
 		game_ui.show_property_prompt(action)

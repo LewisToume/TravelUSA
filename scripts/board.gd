@@ -175,7 +175,7 @@ func _draw() -> void:
 		draw_rect(rect, fill_color, true)
 		draw_rect(rect, CELL_BORDER_COLOR, false, 6.0)
 		draw_string(font, rect.position + Vector2(10.0, 28.0), str(index), HORIZONTAL_ALIGNMENT_LEFT, -1, 21, CELL_BORDER_COLOR)
-		var center_text := get_cell_display_text(cell_type)
+		var center_text := get_cell_display_text(cell_type, String(property.get("encounter_type", GameRules.ENCOUNTER_NONE)))
 		if not center_text.is_empty():
 			var text_size := font.get_string_size(center_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size)
 			var baseline := center + Vector2(-text_size.x * 0.5, text_size.y * 0.32)
@@ -192,13 +192,14 @@ func _draw() -> void:
 			else:
 				draw_circle(get_building_anchor(index), cell_size * 0.5, Color(0.02, 0.03, 0.05, 0.58))
 
-func get_cell_display_text(cell_type: String) -> String:
+func get_cell_display_text(cell_type: String, encounter_type: String = GameRules.ENCOUNTER_NONE) -> String:
+	if cell_type == GameRules.CELL_ENCOUNTER:
+		return GameRules.encounter_display_name(encounter_type)
 	return {
 		GameRules.CELL_START: "起点",
 		GameRules.CELL_WHEEL: "转盘",
 		GameRules.CELL_SHOP: "商店",
 		GameRules.CELL_QUIZ: "答题",
-		GameRules.CELL_ENCOUNTER: "奇遇",
 	}.get(cell_type, "")
 
 func _draw_building_effect(anchor: Vector2, effect_type: String) -> void:

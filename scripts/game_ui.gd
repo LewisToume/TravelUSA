@@ -61,6 +61,7 @@ var mailbox_list: VBoxContainer
 var unread_count := 0
 var _known_notification_ids: Dictionary = {}
 var _latest_inventory: Dictionary = {}
+var _blocked_inventory_cards: Array[String] = []
 var selection_overlay: PanelContainer
 var selection_title: Label
 var selection_details: Label
@@ -157,12 +158,21 @@ func update_game_state(local_player_id: int, players: Dictionary, _active_player
 	repay_tax_button.visible = tax_debt > 0
 	asset_management_button.visible = tax_debt > 0
 	var encounter_type := String(own_state.get("encounter_type", GameRules.ENCOUNTER_NONE))
+	_blocked_inventory_cards.clear()
 	if encounter_type.is_empty():
 		encounter_label.text = "当前奇遇：无"
 	else:
-		encounter_label.text = "当前奇遇：%s  剩余 %d 格" % [GameRules.encounter_name(encounter_type), int(own_state.get("encounter_remaining_steps", 0))]
-		if encounter_type in [GameRules.ENCOUNTER_PROPERTY_GUEST, GameRules.ENCOUNTER_LUCKY_STAR]:
-			encounter_label.text += "  剩余触发 %d 次" % maxi(0, GameRules.ENCOUNTER_MAX_TRIGGERS - int(own_state.get("encounter_trigger_count", 0)))
+		var triggers_left := maxi(0, GameRules.ENCOUNTER_MAX_TRIGGERS - int(own_state.get("encounter_trigger_count", 0)))
+		encounter_label.text = "%s\n剩余 %d 格" % [GameRules.encounter_display_name(encounter_type), int(own_state.get("encounter_remaining_steps", 0))]
+		if encounter_type == GameRules.ENCOUNTER_PROPERTY_GUEST:
+			encounter_label.text += "\n抢占优惠剩余 %d 次" % triggers_left
+		elif encounter_type == GameRules.ENCOUNTER_LUCKY_STAR:
+			encounter_label.text += "\n免费升级剩余 %d 次" % triggers_left
+			if triggers_left > 0: _blocked_inventory_cards.append(GameRules.CARD_BUILD)
+		elif encounter_type == GameRules.ENCOUNTER_WEALTH_GOD:
+			_blocked_inventory_cards.append(GameRules.CARD_TOLL_FREE)
+		elif encounter_type == GameRules.ENCOUNTER_BROOM_STAR:
+			_blocked_inventory_cards.append_array([GameRules.CARD_BUILD, GameRules.CARD_FORCE_BUY])
 	all_players_label.visible = false
 	_latest_inventory = own_state.get("inventory", {}).duplicate(true)
 	cell_label.text = "当前位置：%d" % int(own_state.get("cell", 0))
@@ -265,6 +275,14 @@ func show_event_prompt(action: Dictionary, can_confirm: bool) -> void:
 	if action_type == "reward":
 		property_title.text = "奖励格"
 		property_details.text = "获得 %d 金币" % amount
+	elif action_type == "encounter":
+		var encounter_type := String(action.get("encounter_type", GameRules.ENCOUNTER_NONE))
+		property_title.text = "【%s】" % GameRules.encounter_display_name(encounter_type)
+		property_details.text = "立即效果：\n%s\n\n持续效果：\n%s" % [String(action.get("immediate_effect", "无")), String(action.get("persistent_effect", ""))]
+		var max_triggers := int(action.get("max_triggers", 0))
+		if max_triggers > 0:
+			property_details.text += "\n\n最多触发：\n%d次" % max_triggers
+		property_details.text += "\n\n持续：\n%d格" % int(action.get("duration_steps", GameRules.ENCOUNTER_DURATION_STEPS))
 	else:
 		property_title.text = "大转盘"
 		property_details.text = "获得 %d 金币" % amount if amount >= 0 else "损失 %d 金币" % absi(amount)
@@ -339,7 +357,9 @@ func _populate_card_list(shop_mode: bool) -> void:
 		button.text = "%s\n%s" % [_card_icon(card_id), ("%d 金币" % GameRules.card_price(card_id)) if shop_mode else ("×%d" % count)]
 		button.tooltip_text = String(GameRules.CARD_NAMES[card_id])
 		button.add_theme_font_size_override("font_size", 30)
-		button.disabled = not shop_mode and count <= 0
+		button.disabled = not shop_mode and (count <= 0 or card_id in _blocked_inventory_cards)
+		if not shop_mode and card_id in _blocked_inventory_cards:
+			button.tooltip_text += "（当前奇遇已提供或禁止此效果）"
 		if shop_mode:
 			button.disabled = shop_purchases_blocked or shop_coins <= GameRules.card_price(card_id)
 			button.pressed.connect(func() -> void: shop_card_requested.emit(card_id))
