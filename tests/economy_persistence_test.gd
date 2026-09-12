@@ -16,7 +16,7 @@ func _run() -> void:
 	await process_frame; await process_frame
 	game.test_mode = true; game.test_wheel_result_override = 200; game.test_wheel_spin_duration = 0.01; game.is_host = true; game.local_player_id = 1; game.game_is_started = false; game.active_player_ids.assign([1, 2, 3, 4])
 	game.save_path = SAVE; game.save_temp_path = TEMP
-	check(GameRules.MAP_CELL_TYPES.count(GameRules.CELL_REWARD) == 0 and GameRules.MAP_CELL_TYPES.count(GameRules.CELL_QUIZ) == 9 and GameRules.MAP_CELL_TYPES.count(GameRules.CELL_ENCOUNTER) == 4, "地图包含 9 个答题格和 4 个奇遇格")
+	check(GameRules.MAP_CELL_TYPES.size() == 50 and GameRules.MAP_CELL_TYPES.count(GameRules.CELL_REWARD) == 0 and GameRules.MAP_CELL_TYPES.count(GameRules.CELL_QUIZ) == 15 and GameRules.MAP_CELL_TYPES.count(GameRules.CELL_ENCOUNTER) == 5, "50 格地图包含 15 个答题格、5 个奇遇格且无奖励格")
 	check(QuestionBank.DEFAULT_ENTRIES.size() >= GameRules.QUIZ_QUESTION_COUNT, "QuestionBank 独立并提供足够词条")
 
 	_set_property(1, 2, 3)

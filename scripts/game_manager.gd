@@ -26,6 +26,7 @@ var last_event: Dictionary = {}
 var last_wheel_result := 0
 var player_peer_ids: Dictionary = {1: 1}
 var active_player_ids: Array[int] = [1]
+var known_player_ids: Array[int] = []
 var player_nodes: Dictionary = {}
 
 # Host-only state. RPCs run serially on Godot's main thread; per-cell queues keep
@@ -102,6 +103,8 @@ func _ready() -> void:
 	game_ui.wordbook_file_selected.connect(_on_wordbook_file_selected)
 	game_ui.wordbook_import_confirmed.connect(_confirm_wordbook_import)
 	game_ui.wordbook_import_cancelled.connect(func() -> void: pending_wordbook_import = {})
+	game_ui.debug_modifier_requested.connect(_host_apply_debug_modifier)
+	game_ui.debug_modifier_open_requested.connect(_show_debug_modifier)
 	board.target_cell_selected.connect(_select_cell_target)
 	multiplayer.peer_connected.connect(_on_peer_connected)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
@@ -132,12 +135,15 @@ func host_game(port: int = -1) -> bool:
 	is_host = true
 	local_player_id = 1
 	active_player_ids = [1]
+	known_player_ids = [1]
 	_load_game()
+	if 1 not in known_player_ids: known_player_ids.append(1)
 	_check_player_login(1)
 	_check_daily_taxes()
 	game_ui.set_lobby_buttons_enabled(false)
 	game_ui.set_host_controls(true, room_wordbook_name, room_wordbook.size())
 	game_ui.set_lobby_status("Host 已创建，等待客户端连接（端口 %d）" % target_port)
+	_save_game()
 	return true
 
 func join_game(address: String = "127.0.0.1", port: int = -1) -> bool:
@@ -160,6 +166,7 @@ func start_local_test_game() -> void:
 	local_player_id = 1
 	game_is_started = true
 	active_player_ids = [1, 2]
+	known_player_ids = [1, 2]
 	game_ui.set_host_controls(true, room_wordbook_name, room_wordbook.size())
 	_show_world()
 	_apply_snapshot(_make_snapshot())
@@ -184,7 +191,29 @@ func submit_quiz_answer(option_index: int) -> void:
 	else: _request_quiz_answer_rpc.rpc_id(1, event_id, option_index)
 
 func _show_leaderboard() -> void:
+	if is_host: leaderboard_data = _calculate_leaderboard()
 	game_ui.show_leaderboard(leaderboard_data)
+
+func _show_debug_modifier() -> void:
+	if not is_host:
+		game_ui.show_toast("仅 Host 可使用调试修改器")
+		return
+	game_ui.show_debug_modifier(players_state, _ranked_player_ids())
+
+func _host_apply_debug_modifier(player_id: int, coins: int, stamina: int, inventory: Dictionary) -> bool:
+	if not is_host or player_id not in _ranked_player_ids() or not players_state.has(player_id): return false
+	var state: Dictionary = players_state[player_id]
+	state["coins"] = maxi(0, coins)
+	state["stamina"] = clampi(stamina, 0, GameRules.MAX_STAMINA)
+	var sanitized_inventory: Dictionary = state.get("inventory", {}).duplicate(true)
+	for card_id in GameRules.CARD_IDS:
+		sanitized_inventory[card_id] = maxi(0, int(inventory.get(card_id, sanitized_inventory.get(card_id, 0))))
+	state["inventory"] = sanitized_inventory
+	players_state[player_id] = state
+	_notify("debug", 1, player_id, int(state.get("cell", 0)), 0, "Host 已应用 Player %d 调试数值" % player_id)
+	_broadcast_state()
+	_save_game()
+	return true
 
 func has_local_property_prompt() -> bool:
 	return not pending_action.is_empty() and game_ui.property_overlay.visible
@@ -424,6 +453,8 @@ func _on_peer_connected(peer_id: int) -> void:
 	player_peer_ids[assigned_id] = peer_id
 	if assigned_id not in active_player_ids:
 		active_player_ids.append(assigned_id)
+	if assigned_id not in known_player_ids:
+		known_player_ids.append(assigned_id)
 	_check_player_login(assigned_id)
 	game_is_started = true
 	_assign_local_player.rpc_id(peer_id, assigned_id)
@@ -1275,6 +1306,7 @@ func _close_event(player_id: int, event_id: int) -> void:
 
 func _build_property_action(player_id: int, cell_index: int) -> Dictionary:
 	var property: Dictionary = properties[cell_index]
+	if String(property.get("cell_type", "")) != GameRules.CELL_PROPERTY: return {}
 	var owner_id := int(property["owner_id"])
 	var level := int(property["property_level"])
 	var property_type := String(property.get("property_type", GameRules.PROPERTY_HOUSE))
@@ -1470,6 +1502,7 @@ func _declare_bankruptcy(player_id: int, _reason: String = "") -> void:
 
 func _check_player_login(player_id: int) -> void:
 	_recover_player_stamina(player_id)
+	_expire_encounter_if_needed(player_id)
 	var state: Dictionary = players_state[player_id]
 	if String(state.get("bankruptcy_state", GameRules.BANKRUPTCY_NORMAL)) == GameRules.BANKRUPTCY_BANKRUPT and not String(state.get("bankrupt_date", "")).is_empty() and _server_date() > String(state["bankrupt_date"]):
 		state["coins"] = GameRules.BANKRUPTCY_RELIEF_COINS
@@ -1566,16 +1599,23 @@ func _server_datetime() -> Dictionary:
 
 func _calculate_leaderboard() -> Array:
 	var result: Array = []
-	for player_id in active_player_ids:
+	for player_id in _ranked_player_ids():
 		var property_value := 0
 		for property in properties:
 			if int(property.get("owner_id", -1)) == player_id: property_value += GameRules.property_value(int(property.get("property_level", 0)), String(property.get("property_type", GameRules.PROPERTY_HOUSE)))
 		var coins := int(players_state[player_id].get("coins", 0))
-		result.append({"player_id": player_id, "coins": coins, "property_value": property_value, "total_wealth": coins + property_value})
+		result.append({"player_id": player_id, "coins": coins, "property_value": property_value, "total_wealth": coins + property_value, "online": player_id in active_player_ids})
 	result.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		if int(a["total_wealth"]) == int(b["total_wealth"]): return int(a["coins"]) > int(b["coins"])
 		return int(a["total_wealth"]) > int(b["total_wealth"]))
 	for index in range(result.size()): result[index]["rank"] = index + 1
+	return result
+
+func _ranked_player_ids() -> Array[int]:
+	var result: Array[int] = known_player_ids.duplicate()
+	for player_id in active_player_ids:
+		if player_id not in result: result.append(player_id)
+	result.sort()
 	return result
 
 func _save_game() -> bool:
@@ -1586,7 +1626,7 @@ func _save_game() -> bool:
 		saved_state["action_state"] = GameRules.ACTION_IDLE
 		saved_state["toll_free_this_action"] = false
 		saved_players[player_id] = saved_state
-	var payload := {"save_version": GameRules.SAVE_VERSION, "players_state": saved_players, "properties": properties, "notifications": notifications, "notification_sequence": notification_sequence, "next_event_id": next_event_id, "room_wordbook": room_wordbook, "room_wordbook_name": room_wordbook_name, "room_wordbook_id": room_wordbook_id}
+	var payload := {"save_version": GameRules.SAVE_VERSION, "players_state": saved_players, "known_player_ids": known_player_ids, "properties": properties, "notifications": notifications, "notification_sequence": notification_sequence, "next_event_id": next_event_id, "room_wordbook": room_wordbook, "room_wordbook_name": room_wordbook_name, "room_wordbook_id": room_wordbook_id}
 	var file := FileAccess.open(save_temp_path, FileAccess.WRITE)
 	if file == null: return false
 	file.store_string(JSON.stringify(payload))
@@ -1608,20 +1648,27 @@ func _load_game() -> bool:
 	if not FileAccess.file_exists(save_path): return false
 	var file := FileAccess.open(save_path, FileAccess.READ)
 	if file == null: save_load_failed = true; return false
+	var save_text := file.get_as_text()
+	file.close()
 	var parser := JSON.new()
-	if parser.parse(file.get_as_text()) != OK:
+	if parser.parse(save_text) != OK:
 		save_load_failed = true
 		return false
 	var parsed = parser.data
-	if not parsed is Dictionary or int(parsed.get("save_version", -1)) not in [1, 2, GameRules.SAVE_VERSION]:
+	if not parsed is Dictionary:
 		save_load_failed = true
+		return false
+	if int(parsed.get("save_version", -1)) != GameRules.SAVE_VERSION:
+		_reset_persistent_world()
+		_discard_incompatible_save()
+		_save_game()
 		return false
 	var loaded := _migrate_and_apply_save(parsed)
 	if not loaded: save_load_failed = true
 	return loaded
 
 func _migrate_and_apply_save(data: Dictionary) -> bool:
-	if int(data.get("save_version", -1)) not in [1, 2, GameRules.SAVE_VERSION]: return false
+	if int(data.get("save_version", -1)) != GameRules.SAVE_VERSION: return false
 	if not data.get("players_state", null) is Dictionary or not data.get("properties", null) is Array or not data.get("notifications", null) is Array: return false
 	var loaded_players: Dictionary = data["players_state"]
 	for player_id in range(1, 7):
@@ -1636,14 +1683,21 @@ func _migrate_and_apply_save(data: Dictionary) -> bool:
 		state["toll_free_this_action"] = false
 		players_state[player_id] = state
 	var loaded_properties: Array = data.get("properties", [])
-	if loaded_properties.size() != properties.size(): return false
+	if loaded_properties.size() != GameRules.MAP_CELL_TYPES.size(): return false
+	var canonical_properties := GameRules.build_cells(board.get_cell_count())
 	for index in range(loaded_properties.size()):
 		var property = loaded_properties[index]
 		if not property is Dictionary or not property.has("cell_index") or not property.has("owner_id") or not property.has("property_level") or not property.has("capture_count"): return false
-		if not property.has("property_type"):
-			property["property_type"] = (GameRules.PROPERTY_HOTEL if index in GameRules.HOTEL_CELLS else GameRules.PROPERTY_HOUSE) if String(property.get("cell_type", "")) == GameRules.CELL_PROPERTY else ""
-		loaded_properties[index] = property
-	properties = loaded_properties.duplicate(true)
+		if String(canonical_properties[index]["cell_type"]) == GameRules.CELL_PROPERTY:
+			canonical_properties[index]["owner_id"] = int(property.get("owner_id", -1))
+			canonical_properties[index]["property_level"] = int(property.get("property_level", 0))
+			canonical_properties[index]["capture_count"] = int(property.get("capture_count", 0))
+	properties = canonical_properties
+	known_player_ids.clear()
+	for value in data.get("known_player_ids", [1]):
+		var known_id := int(value)
+		if known_id >= 1 and known_id <= 6 and known_id not in known_player_ids: known_player_ids.append(known_id)
+	if 1 not in known_player_ids: known_player_ids.append(1)
 	notifications = data.get("notifications", []).duplicate(true)
 	notification_sequence = int(data.get("notification_sequence", 1))
 	next_event_id = int(data.get("next_event_id", 1))
@@ -1656,6 +1710,28 @@ func _migrate_and_apply_save(data: Dictionary) -> bool:
 	for player_id in player_nodes:
 		_player_node(player_id).place_at_cell(int(players_state[player_id]["cell"]), board)
 	return true
+
+func _reset_persistent_world() -> void:
+	for player_id in range(1, 7): players_state[player_id] = GameRules.build_player_state(player_id)
+	known_player_ids = [1]
+	properties = GameRules.build_cells(board.get_cell_count())
+	last_rolls = {1: 0, 2: 0}
+	last_event = {}
+	last_wheel_result = 0
+	pending_actions.clear()
+	action_responses.clear()
+	notifications.clear()
+	notification_sequence = 1
+	next_event_id = 1
+	room_wordbook = QuestionBank.default_entries()
+	room_wordbook_name = "内置基础词书"
+	room_wordbook_id = "builtin-default"
+	board.set_property_states(properties)
+	for player_id in player_nodes: _player_node(player_id).place_at_cell(0, board)
+
+func _discard_incompatible_save() -> void:
+	for path in [save_path, save_temp_path, save_path + ".bak"]:
+		if FileAccess.file_exists(path): DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 
 func _choose_wheel_result() -> int:
 	if test_mode and GameRules.is_wheel_result_valid(test_wheel_result_override):
@@ -1671,11 +1747,12 @@ func _broadcast_state() -> void:
 
 func _make_snapshot() -> Dictionary:
 	leaderboard_data = _calculate_leaderboard()
-	return {"players": players_state.duplicate(true), "active_player_ids": active_player_ids.duplicate(), "properties": properties.duplicate(true), "last_rolls": last_rolls.duplicate(true), "last_event": last_event.duplicate(true), "last_wheel_result": last_wheel_result, "notifications": notifications.duplicate(true), "leaderboard": leaderboard_data.duplicate(true), "server_time": _server_time(), "room_wordbook": room_wordbook.duplicate(true), "room_wordbook_name": room_wordbook_name, "room_wordbook_id": room_wordbook_id}
+	return {"players": players_state.duplicate(true), "active_player_ids": active_player_ids.duplicate(), "known_player_ids": known_player_ids.duplicate(), "properties": properties.duplicate(true), "last_rolls": last_rolls.duplicate(true), "last_event": last_event.duplicate(true), "last_wheel_result": last_wheel_result, "notifications": notifications.duplicate(true), "leaderboard": leaderboard_data.duplicate(true), "server_time": _server_time(), "room_wordbook": room_wordbook.duplicate(true), "room_wordbook_name": room_wordbook_name, "room_wordbook_id": room_wordbook_id}
 
 func _apply_snapshot(snapshot: Dictionary) -> void:
 	players_state = snapshot["players"].duplicate(true)
 	active_player_ids.assign(snapshot.get("active_player_ids", [1, 2]))
+	known_player_ids.assign(snapshot.get("known_player_ids", active_player_ids))
 	properties = snapshot["properties"].duplicate(true)
 	last_rolls = snapshot.get("last_rolls", {1: 0, 2: 0}).duplicate(true)
 	last_event = snapshot.get("last_event", {}).duplicate(true)

@@ -24,6 +24,8 @@ signal asset_action_requested(cell_index: int, action_type: String)
 signal wordbook_file_selected(path: String)
 signal wordbook_import_confirmed
 signal wordbook_import_cancelled
+signal debug_modifier_open_requested
+signal debug_modifier_requested(player_id: int, coins: int, stamina: int, inventory: Dictionary)
 
 @onready var startup_overlay: Control = $StartupOverlay
 @onready var lobby_status_label: Label = $StartupOverlay/Center/Panel/Content/LobbyStatus
@@ -98,6 +100,13 @@ var wordbook_status_label: Label
 var wordbook_dialog: FileDialog
 var wordbook_preview_overlay: PanelContainer
 var wordbook_preview_label: Label
+var debug_button: Button
+var debug_overlay: PanelContainer
+var debug_player_selector: OptionButton
+var debug_coins: SpinBox
+var debug_stamina: SpinBox
+var debug_card_spins: Dictionary = {}
+var debug_players: Dictionary = {}
 
 func _ready() -> void:
 	_build_card_and_toast_ui()
@@ -361,6 +370,7 @@ func _build_card_and_toast_ui() -> void:
 	asset_management_button = Button.new(); asset_management_button.text = "处理资产"; asset_management_button.position = Vector2(224, 666); asset_management_button.size = Vector2(180, 58); asset_management_button.pressed.connect(func() -> void: asset_management_requested.emit()); hud.add_child(asset_management_button)
 	_build_asset_ui()
 	_build_wordbook_ui()
+	_build_debug_ui()
 	toast_container = VBoxContainer.new()
 	toast_container.set_anchors_preset(Control.PRESET_CENTER_TOP)
 	toast_container.offset_left = -350; toast_container.offset_top = 40; toast_container.offset_right = 350; toast_container.offset_bottom = 220
@@ -417,6 +427,7 @@ func _build_card_and_toast_ui() -> void:
 	_add_close_button(quiz_overlay, "quiz", Callable(), false)
 	_add_close_button(asset_overlay, "asset", func() -> void: _close_modal(asset_overlay), true)
 	_add_close_button(wordbook_preview_overlay, "wordbook", _cancel_wordbook_preview, true)
+	_add_close_button(debug_overlay, "debug", func() -> void: _close_modal(debug_overlay), true)
 
 func _update_bankruptcy_text() -> void:
 	if bankruptcy_label == null: return
@@ -474,8 +485,52 @@ func _build_wordbook_ui() -> void:
 func set_host_controls(host_controls: bool, book_name: String, entry_count: int) -> void:
 	if wordbook_button == null: return
 	wordbook_button.visible = host_controls
+	debug_button.visible = host_controls
 	if not host_controls and wordbook_dialog.visible: wordbook_dialog.hide()
 	wordbook_status_label.text = "房间词书：%s（%d）" % [book_name, entry_count]
+
+func _build_debug_ui() -> void:
+	debug_button = Button.new(); debug_button.text = "调试修改器"; debug_button.set_anchors_preset(Control.PRESET_TOP_RIGHT); debug_button.offset_left = -220; debug_button.offset_top = 232; debug_button.offset_right = -32; debug_button.offset_bottom = 292; debug_button.pressed.connect(func() -> void: debug_modifier_open_requested.emit()); hud.add_child(debug_button)
+	debug_overlay = PanelContainer.new(); debug_overlay.set_anchors_preset(Control.PRESET_CENTER); debug_overlay.offset_left = -440; debug_overlay.offset_top = -400; debug_overlay.offset_right = 440; debug_overlay.offset_bottom = 400
+	var content := VBoxContainer.new(); debug_overlay.add_child(content)
+	var title := Label.new(); title.text = "Host 调试修改器"; title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; title.add_theme_font_size_override("font_size", 34); content.add_child(title)
+	debug_player_selector = OptionButton.new(); debug_player_selector.item_selected.connect(func(_index: int) -> void: _populate_debug_fields()); content.add_child(debug_player_selector)
+	var money_row := HBoxContainer.new(); content.add_child(money_row)
+	var coins_label := Label.new(); coins_label.text = "金币"; coins_label.custom_minimum_size.x = 220; money_row.add_child(coins_label)
+	debug_coins = SpinBox.new(); debug_coins.min_value = 0; debug_coins.max_value = 999999999; debug_coins.step = 1; debug_coins.allow_greater = true; debug_coins.size_flags_horizontal = Control.SIZE_EXPAND_FILL; money_row.add_child(debug_coins)
+	var stamina_row := HBoxContainer.new(); content.add_child(stamina_row)
+	var stamina_label := Label.new(); stamina_label.text = "活力"; stamina_label.custom_minimum_size.x = 220; stamina_row.add_child(stamina_label)
+	debug_stamina = SpinBox.new(); debug_stamina.min_value = 0; debug_stamina.max_value = GameRules.MAX_STAMINA; debug_stamina.step = 1; debug_stamina.size_flags_horizontal = Control.SIZE_EXPAND_FILL; stamina_row.add_child(debug_stamina)
+	var scroll := ScrollContainer.new(); scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL; content.add_child(scroll)
+	var cards := VBoxContainer.new(); cards.size_flags_horizontal = Control.SIZE_EXPAND_FILL; scroll.add_child(cards)
+	for card_id in GameRules.CARD_IDS:
+		var row := HBoxContainer.new(); cards.add_child(row)
+		var label := Label.new(); label.text = String(GameRules.CARD_NAMES[card_id]); label.custom_minimum_size.x = 220; row.add_child(label)
+		var count := SpinBox.new(); count.min_value = 0; count.max_value = 99999; count.step = 1; count.allow_greater = true; count.size_flags_horizontal = Control.SIZE_EXPAND_FILL; row.add_child(count); debug_card_spins[card_id] = count
+	var apply := Button.new(); apply.text = "应用并同步"; apply.custom_minimum_size.y = 58; apply.pressed.connect(_emit_debug_modifier); content.add_child(apply)
+	debug_overlay.visible = false; add_child(debug_overlay)
+
+func show_debug_modifier(players: Dictionary, player_ids: Array[int]) -> void:
+	debug_players = players.duplicate(true)
+	debug_player_selector.clear()
+	for player_id in player_ids: debug_player_selector.add_item("Player %d" % player_id, player_id)
+	if debug_player_selector.item_count > 0: debug_player_selector.select(0); _populate_debug_fields()
+	_open_modal(debug_overlay)
+
+func _populate_debug_fields() -> void:
+	if debug_player_selector.item_count == 0: return
+	var player_id := debug_player_selector.get_selected_id()
+	var state: Dictionary = debug_players.get(player_id, {})
+	debug_coins.value = maxi(0, int(state.get("coins", 0)))
+	debug_stamina.value = clampi(int(state.get("stamina", 0)), 0, GameRules.MAX_STAMINA)
+	var inventory: Dictionary = state.get("inventory", {})
+	for card_id in GameRules.CARD_IDS: (debug_card_spins[card_id] as SpinBox).value = maxi(0, int(inventory.get(card_id, 0)))
+
+func _emit_debug_modifier() -> void:
+	if debug_player_selector.item_count == 0: return
+	var inventory := {}
+	for card_id in GameRules.CARD_IDS: inventory[card_id] = maxi(0, int((debug_card_spins[card_id] as SpinBox).value))
+	debug_modifier_requested.emit(debug_player_selector.get_selected_id(), maxi(0, int(debug_coins.value)), clampi(int(debug_stamina.value), 0, GameRules.MAX_STAMINA), inventory)
 
 func show_wordbook_preview(book_name: String, parsed: Dictionary) -> void:
 	var preview_lines: Array[String] = []
@@ -501,7 +556,7 @@ func _build_leaderboard_ui() -> void:
 func show_leaderboard(entries: Array) -> void:
 	for child in leaderboard_list.get_children(): child.queue_free()
 	for entry in entries:
-		var label := Label.new(); label.text = "%d. Player %d\n   总财富：%d  现金：%d  房产：%d" % [int(entry["rank"]), int(entry["player_id"]), int(entry["total_wealth"]), int(entry["coins"]), int(entry["property_value"])]; label.add_theme_font_size_override("font_size", 22); leaderboard_list.add_child(label)
+		var label := Label.new(); label.text = "%d. Player %d（%s）\n   总财富：%d  现金：%d  房产：%d" % [int(entry["rank"]), int(entry["player_id"]), "在线" if bool(entry.get("online", false)) else "离线", int(entry["total_wealth"]), int(entry["coins"]), int(entry["property_value"])]; label.add_theme_font_size_override("font_size", 22); leaderboard_list.add_child(label)
 	_open_modal(leaderboard_overlay)
 
 func _build_quiz_ui() -> void:
@@ -691,7 +746,7 @@ func _hide_modal_visual(target: Control) -> void:
 	else: target.visible = false
 
 func _close_all_modals() -> void:
-	for target in [property_overlay, wheel_overlay, card_overlay, mailbox_overlay, leaderboard_overlay, selection_overlay, quiz_overlay, asset_overlay, wordbook_preview_overlay]:
+	for target in [property_overlay, wheel_overlay, card_overlay, mailbox_overlay, leaderboard_overlay, selection_overlay, quiz_overlay, asset_overlay, wordbook_preview_overlay, debug_overlay]:
 		if target != null: _hide_modal_visual(target)
 	active_modal = null
 	force_buy_button.visible = false
@@ -731,7 +786,7 @@ func _apply_warm_theme() -> void:
 	warm_theme.set_stylebox("normal", "LineEdit", input_style); warm_theme.set_stylebox("focus", "LineEdit", input_style)
 	warm_theme.set_color("font_color", "Label", Color("4b2d18")); warm_theme.set_color("font_color", "Button", Color("4b2d18")); warm_theme.set_color("font_disabled_color", "Button", Color("75634c"))
 	warm_theme.set_color("font_color", "LineEdit", Color("4b2d18"))
-	for root_control in [startup_overlay, hud, property_overlay, wheel_overlay, card_overlay, mailbox_overlay, leaderboard_overlay, selection_overlay, quiz_overlay, asset_overlay, wordbook_preview_overlay]:
+	for root_control in [startup_overlay, hud, property_overlay, wheel_overlay, card_overlay, mailbox_overlay, leaderboard_overlay, selection_overlay, quiz_overlay, asset_overlay, wordbook_preview_overlay, debug_overlay]:
 		root_control.theme = warm_theme
 		_remove_cold_overrides(root_control)
 	$StartupOverlay/Backdrop.color = Color("f2d99d")

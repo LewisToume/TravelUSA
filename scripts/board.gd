@@ -4,11 +4,23 @@ const PSEUDO_3D_ENABLED := true
 
 signal target_cell_selected(cell_index: int)
 
-@export_range(8, 100, 1) var cell_count: int = 30
+@export_range(8, 100, 1) var cell_count: int = 50
 @export_range(120.0, 600.0, 10.0) var cell_spacing: float = 320.0
 @export_range(60.0, 240.0, 5.0) var cell_size: float = 150.0
-@export_range(1.0, 2.5, 0.01) var route_aspect_ratio: float = 1.63
 @export_range(1000.0, 3000.0, 50.0) var background_margin: float = 1600.0
+
+const EXPLICIT_CELL_POSITIONS := [
+	Vector2(-2150, -1000), Vector2(-1900, -1100), Vector2(-1660, -1160), Vector2(-1420, -1120), Vector2(-1190, -1000),
+	Vector2(-970, -860), Vector2(-750, -990), Vector2(-520, -1130), Vector2(-280, -1220), Vector2(-30, -1240),
+	Vector2(220, -1190), Vector2(450, -1080), Vector2(660, -930), Vector2(900, -1040), Vector2(1140, -1120),
+	Vector2(1380, -1080), Vector2(1610, -970), Vector2(1820, -820), Vector2(2010, -640), Vector2(2160, -430),
+	Vector2(2220, -190), Vector2(2110, 30), Vector2(2240, 250), Vector2(2200, 500), Vector2(2070, 720),
+	Vector2(1880, 900), Vector2(1650, 1010), Vector2(1410, 1040), Vector2(1190, 950), Vector2(970, 1080),
+	Vector2(730, 1180), Vector2(480, 1200), Vector2(240, 1130), Vector2(20, 990), Vector2(-210, 1100),
+	Vector2(-450, 1190), Vector2(-700, 1160), Vector2(-930, 1060), Vector2(-1140, 910), Vector2(-1370, 1030),
+	Vector2(-1610, 1000), Vector2(-1830, 890), Vector2(-2020, 730), Vector2(-2170, 530), Vector2(-2250, 290),
+	Vector2(-2160, 50), Vector2(-2290, -180), Vector2(-2240, -430), Vector2(-2140, -650), Vector2(-2350, -820),
+]
 
 var _cell_positions: PackedVector2Array = PackedVector2Array()
 var _route_bounds: Rect2
@@ -76,30 +88,14 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _rebuild_path() -> void:
 	_cell_positions.clear()
-	var perimeter := float(cell_count) * cell_spacing
-	var half_perimeter := perimeter * 0.5
-	var board_width := half_perimeter * route_aspect_ratio / (route_aspect_ratio + 1.0)
-	var board_height := half_perimeter - board_width
-	var top_left := Vector2(-board_width * 0.5, -board_height * 0.5)
-
-	for index in range(cell_count):
-		var distance := float(index) * perimeter / float(cell_count)
-		_cell_positions.append(_point_on_rectangle(distance, board_width, board_height, top_left))
-
-	_route_bounds = Rect2(top_left, Vector2(board_width, board_height))
-
-
-func _point_on_rectangle(distance: float, width: float, height: float, top_left: Vector2) -> Vector2:
-	if distance < width:
-		return top_left + Vector2(distance, 0.0)
-	distance -= width
-	if distance < height:
-		return top_left + Vector2(width, distance)
-	distance -= height
-	if distance < width:
-		return top_left + Vector2(width - distance, height)
-	distance -= width
-	return top_left + Vector2(0.0, height - distance)
+	assert(cell_count == EXPLICIT_CELL_POSITIONS.size(), "Board cell_count must match explicit coordinates.")
+	for point in EXPLICIT_CELL_POSITIONS: _cell_positions.append(point)
+	var minimum := _cell_positions[0]
+	var maximum := _cell_positions[0]
+	for point in _cell_positions:
+		minimum = Vector2(minf(minimum.x, point.x), minf(minimum.y, point.y))
+		maximum = Vector2(maxf(maximum.x, point.x), maxf(maximum.y, point.y))
+	_route_bounds = Rect2(minimum, maximum - minimum)
 
 
 func get_cell_position(index: int) -> Vector2:
@@ -179,19 +175,7 @@ func _draw() -> void:
 		draw_rect(rect, fill_color, true)
 		draw_rect(rect, CELL_BORDER_COLOR, false, 6.0)
 		draw_string(font, rect.position + Vector2(10.0, 28.0), str(index), HORIZONTAL_ALIGNMENT_LEFT, -1, 21, CELL_BORDER_COLOR)
-		var center_text := ""
-		if cell_type == GameRules.CELL_REWARD:
-			center_text = "奖励"
-		elif cell_type == GameRules.CELL_WHEEL:
-			center_text = "转盘"
-		elif cell_type == GameRules.CELL_START:
-			center_text = "起点"
-		elif cell_type == GameRules.CELL_SHOP:
-			center_text = "商店"
-		elif cell_type == GameRules.CELL_QUIZ:
-			center_text = "答题"
-		elif cell_type == GameRules.CELL_ENCOUNTER:
-			center_text = "奇遇"
+		var center_text := get_cell_display_text(cell_type)
 		if not center_text.is_empty():
 			var text_size := font.get_string_size(center_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size)
 			var baseline := center + Vector2(-text_size.x * 0.5, text_size.y * 0.32)
@@ -207,6 +191,15 @@ func _draw() -> void:
 				draw_arc(get_building_anchor(index), cell_size * 0.55 + pulse, 0.0, TAU, 40, Color("ffe45c"), 7.0)
 			else:
 				draw_circle(get_building_anchor(index), cell_size * 0.5, Color(0.02, 0.03, 0.05, 0.58))
+
+func get_cell_display_text(cell_type: String) -> String:
+	return {
+		GameRules.CELL_START: "起点",
+		GameRules.CELL_WHEEL: "转盘",
+		GameRules.CELL_SHOP: "商店",
+		GameRules.CELL_QUIZ: "答题",
+		GameRules.CELL_ENCOUNTER: "奇遇",
+	}.get(cell_type, "")
 
 func _draw_building_effect(anchor: Vector2, effect_type: String) -> void:
 	var color := Color(0.9, 0.95, 1.0, 0.7) if effect_type == "upgrade" else Color(0.55, 0.55, 0.55, 0.7)

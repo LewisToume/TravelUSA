@@ -24,6 +24,7 @@ func _run() -> void:
 
 	check(game.player_nodes.size() == 6 and game.players_state.size() == 6, "已准备 1～6 号玩家状态与棋子")
 	check(BoardPath.PLAYER_COLORS.size() == 6, "房产和棋子支持 6 种玩家颜色")
+	check(game.board.get_cell_count() == 50, "地图已扩展为 50 格")
 	check(GameRules.MAP_CELL_TYPES[15] == GameRules.CELL_SHOP and GameRules.MAP_CELL_TYPES[28] == GameRules.CELL_SHOP, "15 与 28 为集中配置的 SHOP 格")
 	var every_inventory_ready := true
 	for player_id in range(1, 7): every_inventory_ready = every_inventory_ready and _all_cards_start_at_one(game.players_state[player_id]["inventory"])
@@ -40,7 +41,7 @@ func _run() -> void:
 	check(not game.game_ui.card_overlay.visible and game.game_ui.leaderboard_overlay.visible, "打开新主窗口会关闭旧主窗口")
 	game.game_ui.modal_close_buttons["leaderboard"].pressed.emit()
 	check(game.game_ui.active_modal == null and not game.game_ui.modal_shade.visible, "点击 X 后解除模态遮罩")
-	check(game.game_ui.modal_close_buttons.size() == 9 and game.game_ui.modal_close_buttons["property"].disabled and game.game_ui.modal_close_buttons["wheel"].disabled and game.game_ui.modal_close_buttons["quiz"].disabled, "全部主窗口有大号 X 且强制流程不可绕过")
+	check(game.game_ui.modal_close_buttons.size() == 10 and game.game_ui.modal_close_buttons["property"].disabled and game.game_ui.modal_close_buttons["wheel"].disabled and game.game_ui.modal_close_buttons["quiz"].disabled, "全部主窗口有大号 X 且强制流程不可绕过")
 	var warm_panel := game.game_ui.card_overlay.get_theme_stylebox("panel") as StyleBoxFlat
 	check(warm_panel != null and warm_panel.bg_color.a == 1.0 and warm_panel.bg_color.r > warm_panel.bg_color.b and warm_panel.border_width_left >= 3, "主窗口使用不透明暖色背景和棕色边框")
 	check(BoardPath.PSEUDO_3D_ENABLED and BoardPlayer.PSEUDO_3D_ENABLED and BoardPath.BACKGROUND_COLOR.r > BoardPath.BACKGROUND_COLOR.b, "地图、角色与房产启用明亮暖色伪 3D 表现")
@@ -135,7 +136,7 @@ func _run() -> void:
 	game._on_card_selected(GameRules.CARD_SPEED)
 	check(_toast_contains(game, "今日已破产，无法使用卡牌") and game.targeting_card_id.is_empty(), "破产玩家点击卡牌会明确提示且不进入目标选择")
 	p1 = game.players_state[1]; p1["bankruptcy_state"] = GameRules.BANKRUPTCY_NORMAL; game.players_state[1] = p1
-	check(game.game_ui.find_children("*", "SpinBox", true, false).is_empty(), "卡牌界面已删除通用数字输入框")
+	check(game.game_ui.card_overlay.find_children("*", "SpinBox", true, false).is_empty() and game.game_ui.selection_overlay.find_children("*", "SpinBox", true, false).is_empty(), "卡牌界面已删除通用数字输入框")
 	var offscreen_cell := -1
 	for cell_index in range(game.properties.size()):
 		if String(game.properties[cell_index]["cell_type"]) == GameRules.CELL_PROPERTY and not game._is_cell_in_player_view(1, cell_index): offscreen_cell = cell_index; break
